@@ -160,6 +160,30 @@ class HiggsfieldTests(unittest.TestCase):
         with self.assertRaises(BackendError):
             self.run_generate(FakeClient([done("completed", "completed")]))
 
+    def test_media_role_per_model(self):
+        client = FakeClient([done("completed")])
+        self.run_generate(client, self.request(count=1, model="gpt_image_2"))
+        p = client.named("generate_image_batch")[0]["requests"][0]["params"]
+        self.assertEqual(p["medias"], [{"role": "image", "value": "m1"}])
+        for m in self.backend.catalogue:
+            want = "image" if m.id == "gpt_image_2" else "image_references"
+            self.assertEqual(m.extra["media_role"], want, m.id)
+
+    def test_seedream_never_picks_unsupported_ratio(self):
+        for model in ("seedream_5_0_flash", "seedream_v5_lite", "seedream_v4_5"):
+            ratios = self.backend.model_spec(model).extra["ratios"]
+            self.assertNotIn("4:5", ratios)
+            self.assertNotIn("5:4", ratios)
+            for w, h in ((1000, 1250), (1250, 1000), (1000, 1000), (1920, 1080), (1000, 1500)):
+                mw, mh = self.backend.model_size(w, h, model)
+                got = higgsfield.nearest_ratio(mw, mh, ratios)
+                self.assertIn(got, ratios)
+                self.assertNotIn(got, ("4:5", "5:4"))
+        lite = self.backend.model_spec("seedream_v5_lite").extra["ratios"]
+        self.assertNotIn("3:2", lite)
+        self.assertNotIn("2:3", lite)
+        self.assertNotIn("21:9", self.backend.model_spec("ideogram_4_5").extra["ratios"])
+
     def test_model_size_matches_model_ratio(self):
         for model in self.backend.model_ids():
             ratios = self.backend.model_spec(model).extra["ratios"]

@@ -4,9 +4,10 @@ Protocol (verified live, see docs/superpowers/research/research-higgsfield.md):
 ``media_upload`` -> PUT -> ``media_confirm`` -> ``generate_image_batch`` -> ``jobs_wait`` until
 ``all_terminal`` -> plain GET of every ``result_url``.
 
-The server rejects the ``mask`` media role today, so every model is a reference edit
+Four models (nano_banana_2, nano_banana_2_1, nano_banana_2_lite, ideogram_4_5) now list a ``mask``
+media role, but GenFill does not use it yet (not live-tested), so every model is a reference edit
 (``kind="edit"``): the model sees only the crop and an instruction, GenFill composites the result
-back through the selection. Results come back at the model's own resolution; the engine resamples.
+back through the selection. The reference-image role differs per model (``media_role``). Results come back at the model's own resolution; the engine resamples.
 """
 from __future__ import annotations
 
@@ -26,21 +27,31 @@ _CLASSIC = ["1:1", "3:2", "2:3", "4:3", "3:4", "4:5", "5:4", "9:16", "16:9", "21
 _BASIC = ["1:1", "4:3", "3:4", "16:9", "9:16"]
 _GPT = ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "27:16", "16:27",
         "9:8", "8:9", "4:5", "5:4"]
+_GPT2 = ["1:1", "4:3", "3:4", "16:9", "21:9", "9:16", "3:2", "2:3"]
 _WIDE = _CLASSIC + ["4:1", "1:4", "8:1", "1:8"]
-_IDEOGRAM = _CLASSIC + ["1:3", "3:1", "1:2", "2:1"]
+_IDEOGRAM = ["1:1", "1:2", "2:1", "2:3", "3:2", "4:5", "5:4", "9:16", "16:9", "5:8", "8:5",
+             "3:4", "4:3", "9:22", "22:9", "9:23", "23:9", "3:8", "8:3", "5:12", "12:5",
+             "1:3", "3:1"]
+_SEEDREAM = ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"]
+_SEEDREAM_LITE = ["1:1", "4:3", "3:4", "16:9", "9:16", "21:9"]
+_FLUX3 = ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"]
 _QUALITY = ("low", "medium", "high")
 
 
-def _spec(id, label, ratios, resolution="1k", quality=None, seed=False, note=""):
-    """``quality``: GenFill quality -> model value ("auto" always means the model default)."""
+def _spec(id, label, ratios, resolution="1k", quality=None, seed=False, note="",
+          role="image_references"):
+    """``quality``: GenFill quality -> model value ("auto" always means the model default).
+
+    ``role``: media role of the reference image (differs per model).
+    """
     return ModelSpec(id, label, kind="edit", note=note, ratios=list(ratios),
-                     resolution=resolution, quality=quality, seed=seed)
+                     resolution=resolution, quality=quality, seed=seed, media_role=role)
 
 
 _CATALOGUE = (
     _spec("gpt_image_2_5", "GPT Image 2.5", _GPT, quality={q: q for q in _QUALITY},
           note="Follows the prompt well and keeps the geometry. About 0.25 credits at low."),
-    _spec("gpt_image_2", "GPT Image 2", _BASIC + ["3:2", "2:3"], quality={q: q for q in _QUALITY}),
+    _spec("gpt_image_2", "GPT Image 2", _GPT2, quality={q: q for q in _QUALITY}, role="image"),
     _spec("nano_banana_2_1", "Nano Banana 2.1", _WIDE, seed=True, note="About 1.5 credits."),
     _spec("nano_banana_2", "Nano Banana 2", _CLASSIC, note="About 1.5 credits."),
     _spec("nano_banana_2_lite", "Nano Banana 2 Lite", _CLASSIC, note="About 1 credit."),
@@ -48,14 +59,13 @@ _CATALOGUE = (
     _spec("nano_banana", "Nano Banana", _CLASSIC, resolution=None),
     _spec("ideogram_4_5", "Ideogram 4.5", _IDEOGRAM, seed=True,
           quality={"low": "low", "medium": "medium", "high": "high"}, note="About 1 credit at low."),
-    _spec("seedream_v5_pro", "Seedream 5 Pro", ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3",
-                                                "21:9"]),
-    _spec("seedream_5_0_flash", "Seedream 5 Flash", _CLASSIC),
-    _spec("seedream_v5_lite", "Seedream 5 Lite", _CLASSIC, resolution=None),
-    _spec("seedream_v4_5", "Seedream 4.5", _CLASSIC, resolution=None),
+    _spec("seedream_v5_pro", "Seedream 5 Pro", _SEEDREAM),
+    _spec("seedream_5_0_flash", "Seedream 5 Flash", _SEEDREAM),
+    _spec("seedream_v5_lite", "Seedream 5 Lite", _SEEDREAM_LITE, resolution=None),
+    _spec("seedream_v4_5", "Seedream 4.5", _SEEDREAM, resolution=None),
     _spec("flux_kontext", "FLUX Kontext", _BASIC, resolution=None),
     _spec("flux_2", "FLUX.2", _BASIC),
-    _spec("flux_3_image", "FLUX.3", ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"]),
+    _spec("flux_3_image", "FLUX.3", _FLUX3),
 )
 
 
@@ -89,7 +99,8 @@ class HiggsfieldBackend(McpBackend):
         params = {
             "model": spec.id,
             "prompt": prompt,
-            "medias": [{"role": "image_references", "value": media_id}],
+            "medias": [{"role": spec.extra.get("media_role") or "image_references",
+                        "value": media_id}],
             "aspect_ratio": ratio,
             "use_unlim": False,
         }

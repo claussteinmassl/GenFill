@@ -47,9 +47,9 @@ NODES = {
         "prompt": p, "prompt_upsampling": False, "guidance": 60, "steps": 50, "seed": s}),
     "flux-erase": NodeSpec("FluxEraseNode", lambda p, s, n: {
         "dilate_pixels": 10, "seed": s}),
-    "bria-genfill": NodeSpec("BriaGenFill", lambda p, s, n: dict(
-        {"prompt": p, "seed": max(1, s), "moderation": "false"},
-        **({"negative_prompt": n} if n else {}))),
+    "bria-genfill": NodeSpec("BriaGenFill", lambda p, s, n: {
+        "prompt": p, "negative_prompt": n or "", "refine_prompt": True,
+        "seed": max(1, s), "moderation": "false"}),
     "bria-eraser": NodeSpec("BriaEraser", lambda p, s, n: {
         "mask_type": "manual", "moderation": "false"}, seeded=False),
     "recraft-inpaint": NodeSpec("RecraftImageInpaintingNode", lambda p, s, n: dict(

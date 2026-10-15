@@ -145,6 +145,13 @@ class TestGenerate(Env):
         g = self.called("submit_workflow")[0]["workflow"]
         self.assertEqual(g["3"]["class_type"], "BriaEraser")
 
+    def test_bria_genfill_required_inputs(self):
+        self.b.generate(self.req(prompt="a car", model="bria-genfill"), "k")
+        g = self.called("submit_workflow")[0]["workflow"]
+        node = [v for v in g.values() if v["class_type"] == "BriaGenFill"][0]
+        self.assertEqual(node["inputs"]["negative_prompt"], "")
+        self.assertIs(node["inputs"]["refine_prompt"], True)
+
     def test_partner_route(self):
         out = self.b.generate(self.req(model="nano-banana-2", count=2), "k")
         self.assertEqual(len(out), 2)
