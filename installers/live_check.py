@@ -3,11 +3,16 @@
 Usage (from the repository root):
 
     python installers/live_check.py <backend id> [model] [--prompt "..."] [--count N] [--out DIR]
+                                    [--workflows DIR]
 
 It builds a 640x480 test crop (sky, ground, a red ball) and a mask over the ball, calls the
 backend exactly like GenFill does, and writes the results plus a report to ``--out``
 (default: ``test_output/live_<backend>``). OAuth backends open the browser to sign in the first
-time. This spends real credits.
+time. This spends real credits (except ComfyUI on your own machine).
+
+ComfyUI: the model is a workflow id, e.g. ``comfyui sdxl_inpaint --workflows tests/fixtures/comfyui``.
+``--workflows DIR`` adds a workflow folder (sets ``GENFILL_COMFY_WORKFLOWS``); the server comes
+from ``GENFILL_COMFY_URL`` or the config (default http://127.0.0.1:8188).
 """
 from __future__ import annotations
 
@@ -61,7 +66,13 @@ def main(argv=None):
     ap.add_argument("--count", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="")
+    ap.add_argument("--workflows", default="",
+                    help="extra ComfyUI workflow folder (sets GENFILL_COMFY_WORKFLOWS)")
     args = ap.parse_args(argv)
+    if args.workflows:
+        # config.comfyui_workflow_dirs() reads the variable on every call, so setting it here
+        # (before the backend lists or loads a workflow) is early enough.
+        os.environ["GENFILL_COMFY_WORKFLOWS"] = os.path.abspath(args.workflows)
 
     backend = backends.get(args.backend)
     out = args.out or os.path.join(HERE, "..", "test_output", "live_%s" % backend.id)

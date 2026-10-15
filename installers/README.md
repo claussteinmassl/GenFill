@@ -58,7 +58,27 @@ network needed), renders the results and writes everything to `test_output\` in 
 
 Claude can read `test_output\` directly, so after a run you can just say "check the smoke test".
 
-## Local AI
+## ComfyUI
 
-The free local model is installed from inside Nuke, not from here:
-**GenFill > Local AI > Install / Repair...**. See the main README.
+GenFill's free local model runs on a ComfyUI server you install yourself; see the main README
+(Install > ComfyUI). There is nothing to install from this folder.
+
+## Checking a backend against the real service
+
+`live_check.py` generates once with a backend outside Nuke, like GenFill does, and writes the
+results and a report to `test_output\live_<backend>`:
+
+```
+python installers/live_check.py <backend id> [model] [--prompt "..."] [--count N] [--out DIR]
+```
+
+For ComfyUI the model is a workflow id, and `--workflows DIR` adds a workflow folder (it sets
+`GENFILL_COMFY_WORKFLOWS`). The server comes from `GENFILL_COMFY_URL` or the saved URL (default
+`http://127.0.0.1:8188`). The test fixtures use SDXL, which needs
+`sd_xl_base_1.0_inpainting_0.1.safetensors` in the server's `models/checkpoints` folder:
+
+```
+python installers/live_check.py comfyui sdxl_inpaint --workflows tests/fixtures/comfyui
+```
+
+An empty `--prompt ""` runs the erase partner (`sdxl_erase`). Cloud backends spend real credits.

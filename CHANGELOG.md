@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0 - 2026-10-15
+
+- **ComfyUI backend with workflows.** GenFill runs API-format ComfyUI workflows on any ComfyUI
+  server: your machine (`http://127.0.0.1:8188`), another machine on the network, or a RunPod pod
+  (`https://<pod-id>-8188.proxy.runpod.net`). Each workflow is one entry in the model version menu.
+  URL, an optional bearer token for reverse proxies and the workflow folders are set in
+  *API Keys & Accounts* or with `GENFILL_COMFY_URL`, `GENFILL_COMFY_TOKEN` and
+  `GENFILL_COMFY_WORKFLOWS`.
+- **Shipped workflows:** FLUX.1 Fill [dev] (local model files, plus an erase partner for an empty
+  prompt) and Comfy API workflows (FLUX Pro Fill and Erase, Bria GenFill and Eraser, Recraft
+  inpaint), which bill your Comfy.org account key (`COMFY_API_KEY`, as for Comfy Cloud).
+- **Studio workflows.** Add your own graphs: export with *Workflow > Export (API)*, title the
+  nodes `GenFill Image`, `GenFill Mask`, `GenFill Prompt`, ... and drop the file with an optional
+  `<id>.genfill.json` sidecar into a folder listed in `GENFILL_COMFY_WORKFLOWS` or
+  `comfyui.workflow_dirs`. Later folders override shipped workflow ids. See
+  `nuke/workflows/comfyui/README.md`.
+- **Removed the built-in Local AI** (the FLUX/LaMa helper with its ~25 GB, Windows-only installer).
+  ComfyUI replaces it; nodes that were set to *Local* switch to ComfyUI automatically. Upgrade
+  note: the old helper folder `%USERPROFILE%\GenFill-LocalAI` is no longer used and can be deleted.
+  Results now come back as 8-bit PNG (the float TIFF path of the old helper is gone); the colour
+  pipeline is unchanged.
+- `installers/live_check.py` takes `--workflows DIR` to run ComfyUI workflows from a folder, e.g.
+  `python installers/live_check.py comfyui sdxl_inpaint --workflows tests/fixtures/comfyui`.
+
 ## 0.8.0 - 2026-10-15
 
 - **Four new cloud backends: fal.ai, Magnific, Higgsfield and Comfy Cloud.** Pick them in the

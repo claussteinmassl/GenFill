@@ -8,7 +8,7 @@
    what a model expects happens inside the node and is exactly inverted on the way back.
 3. **Never break a render.** The node is a Group of native Nuke nodes. Generation needs the
    plugin; rendering does not.
-4. **Backends are swappable.** Cloud today, local tomorrow, HDR-capable later.
+4. **Backends are swappable.** Cloud providers and any ComfyUI server (local, network, RunPod) behind one interface.
 
 ## The node
 
@@ -152,33 +152,48 @@ variation. Cancel calls `cancel_job`.
 per variation (or one with `num_images`) to `queue.fal.run/<model>`, poll the returned
 `status_url`, read the `response_url`, download the images. `Authorization: Key <FAL_KEY>`.
 
-## Local AI (free, offline)
+## ComfyUI (local, network or cloud GPU)
 
 ```
-Nuke (GenFill plugin)                         GenFill-LocalAI\ (outside OneDrive)
-  backends/local.py                             env\  private Python 3.12 + PyTorch CUDA
-  localai/client.py  --- JSON lines over --->   localai/worker.py (hidden helper process)
-                         stdin / stdout           FLUX.1 Fill [dev] GGUF (diffusers)
-                                                  T5-XXL (loaded briefly per new prompt)
-                                                  CLIP-L, FLUX VAE, LaMa (TorchScript)
+Nuke (GenFill plugin)                          ComfyUI server (this machine, LAN, RunPod)
+  backends/comfyui.py       --- HTTP(S) --->     POST /upload/image   plate crop + mask
+  backends/comfy_workflows.py                    POST /prompt         one patched graph per variation
+                                                 GET  /history/<id>   poll
+                                                 GET  /view           download PNGs
+                                                 GET  /queue, POST /queue, POST /interrupt (cancel)
 ```
 
-- **Why a separate process:** PyTorch and ~10 GB of model weights never load into Nuke. A crash
-  or GPU out-of-memory becomes an error in the panel; Nuke and the script stay alive, and
-  PyTorch's CUDA libraries can't clash with Nuke's (CopyCat/Cattery).
-- **Lifecycle:** started hidden (`CREATE_NO_WINDOW`) on the first Local generation; model stays
-  loaded between generations; exits when Nuke closes the pipe, on *Stop AI Helper*, or after
-  10 idle minutes. Nuke's `PYTHONPATH`/`PYTHONHOME` are stripped from its environment.
-- **Memory on 12 GB GPUs:** FLUX Q4_K_S (6.8 GB) stays on the GPU. T5 (9.5 GB) is loaded straight
-  to the GPU only while a new prompt is encoded (the transformer is parked in system RAM for those
-  seconds), then freed. Encodings are cached per prompt.
-- **Removal (empty prompt):** variation 1 is LaMa; later variations run FLUX.1 Fill at strength
-  0.8 starting from the LaMa result, which adds texture while staying a clean plate.
-- **Installer** (`localai/installer.py`, dialog in `ui/localai_dialog.py`): uv builds the private
-  Python, then PyTorch (cu128) and diffusers/transformers/gguf are installed, the models are
-  downloaded from public repositories (no login), the diffusers configs for FLUX.1 Fill are
-  written locally (the official repos are gated), and a self-test runs on the GPU.
-  `manifest.json` marks a complete install.
+- **Why a server:** PyTorch and the model weights never load into Nuke. A crash or GPU
+  out-of-memory becomes an error in the panel; Nuke and the script stay alive, and the model
+  can live on another machine. This replaced the built-in local helper process of 0.8.
+- **Workflows** (`comfy_workflows.py`): API-format graphs (`<id>.json`) with an optional
+  `<id>.genfill.json` sidecar (label, `kind` inpaint/erase, `empty_prompt` erase partner, crop
+  `pixels`/`multiple`/`min_side`/`max_side`, `api_nodes`, `timeout`, `requires`). GenFill finds
+  its inputs by node title (`GenFill Image`, `GenFill Mask`, `GenFill Prompt`, `GenFill
+  Negative`, `GenFill Seed`, `GenFill Output`; the table is in the module docstring and in
+  `nuke/workflows/comfyui/README.md`). `validate()` rejects UI-format files and graphs without
+  image and mask nodes; such a workflow is listed as "Not usable: ..." instead of crashing.
+- **Discovery:** `config.comfyui_workflow_dirs()` = the bundled `nuke/workflows/comfyui`, then
+  `comfyui.workflow_dirs` from the config file, then `GENFILL_COMFY_WORKFLOWS` (os.pathsep list),
+  read on every call. `library()` merges them in that order, so a later folder overrides an
+  earlier workflow id, and re-reads only when a file changed. Each workflow is one entry of the model
+  (version) menu; the model id is the workflow id (default `flux_fill`).
+- **Generate** (`ComfyUIBackend.generate`): an empty prompt switches to the workflow's
+  `empty_prompt` partner; upload the crop and the mask (`LoadImage` workflows get the alpha mask
+  file, `LoadImageMask` the red/white one); queue one deep-copied, patched graph per variation
+  with seed `base + i`; poll `/history/<id>` (a few failed polls are tolerated); download the
+  images of the output nodes. Queue position is shown while waiting. Cancel or timeout deletes
+  queued jobs and interrupts the running one. A variation that fails keeps the finished ones.
+- **Auth:** `Authorization: Bearer <token>` (`GENFILL_COMFY_TOKEN`) for protected servers.
+  Workflows with `api_nodes` (Comfy API / partner nodes) also need the Comfy.org account key
+  (`COMFY_API_KEY`, shared with Comfy Cloud), sent as `extra_data.api_key_comfy_org`.
+- **Errors:** `POST /prompt` 400 answers are turned into readable messages; a missing model file
+  names the file and the `models/` subfolder to put it in. An unreachable server reports
+  "Cannot reach ComfyUI at <url>".
+- **Settings:** the ComfyUI group of the API Keys dialog (`ui/settings.py`) edits URL and token
+  and has a connection test; env vars win over the stored values.
+- **Upgrade:** `node.py` maps a stored "Local..." backend label to ComfyUI when a node loads.
+  The crop is sent as an 8-bit PNG and results come back as 8-bit PNG.
 
 ## Colour
 
@@ -187,8 +202,8 @@ decision (`transfer`) with the generation:
 
 ```
 Source -> Crop -> Reformat -> [gf_to_model: Expression(ACEScct) | OCIOColorSpace | none]
-       -> Write 32-bit float TIFF (local) / 8-bit PNG (cloud), raw
-model works in 0..1 (float in, float out for the local model)
+       -> Write 8-bit PNG, raw
+model works in 0..1 (8-bit in, 8-bit out)
 Read (raw) -> [gf_from_model: inverse Expression | inverse OCIOColorSpace | none] -> Reformat -> Transform
 ```
 
@@ -199,9 +214,9 @@ Read (raw) -> [gf_from_model: inverse Expression | inverse OCIOColorSpace | none
   0..1; falls back to ACEScct when the config has no output transform.
 - The ACEScct curve is implemented as Expression nodes (and in Python for previews/tests), so it
   needs no OCIO config. 0..1 in ACEScct covers scene-linear -0.007..222.9.
-- The local helper loads the float TIFF with tifffile, clamps to 0..1 only at the model's input,
-  takes FLUX's float output (`output_type="np"`) and writes float TIFF, plus an 8-bit preview PNG
-  for the panel (ACEScct decoded + sRGB for log; as-is for display-referred).
+- Every backend, ComfyUI included, takes and returns 8-bit PNG (the float TIFF path of the
+  removed local helper is gone). The inverse transfer is steep near white, so check bright
+  gradients for banding.
 - Generations made before 0.6 have no `transfer`; they're read the old way (8-bit file in the
   default colourspace, no decode).
 
