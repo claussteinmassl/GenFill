@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers-extended-cc:subagent-driven-development (recommended) or superpowers-extended-cc:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** GenFill generates through any ComfyUI instance (local, LAN, RunPod) with workflows shipped in `nuke/workflows/comfyui/`, picked from the model version dropdown; the built-in Local AI helper is removed.
+**Goal:** GenFill generates through any ComfyUI instance (and, added mid-run on user request: current model catalogues with live discovery, a 1K/2K/4K resolution setting, a multi-line prompt, cost preview and credit balance) (local, LAN, RunPod) with workflows shipped in `nuke/workflows/comfyui/`, picked from the model version dropdown; the built-in Local AI helper is removed.
 
 **Architecture:** A pure workflow library (`backends/comfy_workflows.py`) loads API-format graphs plus optional sidecars and patches them by node title. A stdlib HTTP backend (`backends/comfyui.py`) uploads plate and mask, queues one patched graph per variation, polls history and downloads outputs. Settings (URL, token, workflow folders) come from env vars first, then `config.json`.
 
@@ -28,6 +28,7 @@
 - "Entfernen, Comfy ersetzt ihn" — remove the Local AI helper; old nodes move to ComfyUI.
 - Ship "FLUX.1 Fill [dev], Erase/Remove, Comfy API-Nodes".
 - Live test: "Ja, ein kleines Modell" — SDXL inpainting checkpoint in the local ComfyUI.
+- Mid-run requests (2026-10-15): dropdown must reflect current models (GPT 2.5, Ideogram); multi-line prompt; show cost before generating and credit balance where a subscription exists; choose processing resolution 1K/2K/4K.
 - "Ja, autark bis Merge" — implement, PR and merge into claussteinmassl/GenFill without further questions.
 
 ---
@@ -533,9 +534,124 @@ class ComfyUIBackend(Backend):
 
 ---
 
-### Task 6: Live verification (controller)
+### Task 7: Current model catalogues (static refresh)
 
-**Goal:** A real generation through GenFill's own backend code on the local ComfyUI with the SDXL fixture, plus validation of all shipped workflows.
+**Goal:** The curated catalogues of Magnific, Higgsfield, Comfy Cloud and fal list the provider's current inpaint/edit models with correct ids, labels and parameters (GPT 2.5, Ideogram 4.5, Flux.2 Pro, Seedream 5 Lite/Flash, Nano Banana 2.1, ...).
+
+**Files:**
+- Modify: `nuke/python/genfill/backends/magnific.py`, `higgsfield.py`, `comfy_cloud.py`, `fal.py`
+- Test: `tests/test_magnific.py`, `tests/test_higgsfield.py`, `tests/test_comfy_cloud.py`, `tests/test_fal.py`
+
+**Acceptance Criteria:**
+- [ ] Every "add"/"rename" recommendation of the catalogue-diff tables in `docs/superpowers/research/research-models-costs.md` §1a-1d is applied, except entries marked "skip"; private/beta provider models get " (beta)" in the label and a note "may need account access".
+- [ ] Magnific: `gpt-2-mini` "GPT 2.5" edit model and `gpt-2` pass `quality` (GenFill low/medium/high → model value; `auto` = omit); `retouch-inpaint-lab-gpt-2-mini` "Retouch GPT 2.5 (beta)"; `retouch-ideogram-4-5` "Retouch Ideogram 4.5 (beta)"; `flux-2` label "Flux.2 Pro"; `seedream-5-lite`, `seedream-5-flash` added.
+- [ ] Higgsfield: models whose `models_explore` roles include `mask` (`nano_banana_2`, `nano_banana_2_1`, `nano_banana_2_lite`, `ideogram_4_5`) send the GenFill mask as a `mask` media (uploaded like the image) and become `kind="inpaint"`; others stay reference edits. Verify the exact role names/param shape with `mcp__claude_ai_Higgsfield__models_explore` (read-only) before coding.
+- [ ] Comfy Cloud: add `openai/images-generations` GPT Image 2.5 (flare, sunburst via `params.model`), `ideogram/generate` V3 edit with mask, `bfl/flux-2-max`, `xai/grok-image-edit`, with param shapes from `get_prompting_guide(model:"partner")` (read-only).
+- [ ] fal: add `ideogram/v4.5/edit`, `openai/gpt-image-2.5/flare/edit`, `openai/gpt-image-2.5/sunburst/edit` (mask), `google/nano-banana-2.1/edit`; input field names taken from `GET https://api.fal.ai/v1/models?endpoint_id=<id>&expand=openapi-3.0` (no key needed).
+- [ ] Unit tests cover the new request shapes (quality passthrough, Higgsfield mask media, fal mask field per new endpoint); full suite green. No paid calls.
+
+**Verify:** `python3 -m unittest tests.test_magnific tests.test_higgsfield tests.test_comfy_cloud tests.test_fal -v` → all pass
+
+```json:metadata
+{"files": ["nuke/python/genfill/backends/magnific.py", "nuke/python/genfill/backends/higgsfield.py", "nuke/python/genfill/backends/comfy_cloud.py", "nuke/python/genfill/backends/fal.py", "tests/test_magnific.py", "tests/test_higgsfield.py", "tests/test_comfy_cloud.py", "tests/test_fal.py"], "verifyCommand": "python3 -m unittest tests.test_magnific tests.test_higgsfield tests.test_comfy_cloud tests.test_fal -v", "acceptanceCriteria": ["research diff recommendations applied", "Magnific GPT 2.5 + quality passthrough", "Higgsfield mask role for inpaint models", "Comfy Cloud and fal new endpoints with verified fields", "tests for new shapes, suite green"], "modelTier": "standard"}
+```
+
+---
+
+### Task 8: Live model discovery
+
+**Goal:** The version dropdown also shows models a provider added after this release: Magnific, Higgsfield and fal catalogues are fetched live, cached for 24 h and merged with the curated list.
+
+**Files:**
+- Create: `nuke/python/genfill/backends/discovery.py` (cache file `~/.nuke/genfill/models_cache.json`, TTL, merge)
+- Modify: `nuke/python/genfill/backends/base.py` (`Backend.discover(api_key)` default `[]`, `Backend.model_ids()/model_spec()` include discovered specs), `magnific.py`, `higgsfield.py`, `fal.py`, `nuke/python/genfill/ui/panel.py` (version combo: "Refresh model list" entry at the end that runs discovery on a worker thread; discovered-only entries labelled "<label> (new)")
+- Test: `tests/test_discovery.py`
+
+**Acceptance Criteria:**
+- [ ] Magnific: `retouch_models_list` (text, parse per research §1a) + `images_models_list` (JSON); edit entries only with `supportsReferences` and "image" in `referenceTypes`; aspect ratios/customSize/resolutions carried in `ModelSpec.extra`. Higgsfield: `models_explore {action:"list", type:"image"}`, entries with an image-reference or mask role. fal: `GET https://api.fal.ai/v1/models?category=image-to-image&limit=100&expand=openapi-3.0` (paged via `next_cursor` if present), entries whose input schema has `image_url`/`image_urls` (+ `mask_url` → inpaint).
+- [ ] Curated entries always win (labels, params); discovered entries never replace them. Discovery never opens a browser (`interactive=False`); not signed in / no network → silently keeps the cache/curated list (logged).
+- [ ] Cache: per backend, `{"fetched": iso, "models": [...]}`; reused within 24 h; "Refresh model list" forces a fetch.
+- [ ] A discovered model runs through the backend's generic path (Magnific `images_generate`/`images_retouch`, Higgsfield `generate_image_batch`, fal generic `image_url`/`mask_url`/`prompt` payload) — unit-tested with the existing fakes.
+
+**Verify:** `python3 -m unittest tests.test_discovery -v` → all pass; full suite green
+
+```json:metadata
+{"files": ["nuke/python/genfill/backends/discovery.py", "nuke/python/genfill/backends/base.py", "nuke/python/genfill/backends/magnific.py", "nuke/python/genfill/backends/higgsfield.py", "nuke/python/genfill/backends/fal.py", "nuke/python/genfill/ui/panel.py", "tests/test_discovery.py"], "verifyCommand": "python3 -m unittest tests.test_discovery -v", "acceptanceCriteria": ["live lists for Magnific/Higgsfield/fal", "curated wins, non-interactive, offline-safe", "24h cache + forced refresh", "discovered models run through generic path"], "modelTier": "standard"}
+```
+
+---
+
+### Task 9: Resolution setting (Auto / 1K / 2K / 4K)
+
+**Goal:** The artist chooses the processing resolution; every backend sends the crop at that size (within the model's limits) and tells the panel the exact size it will send.
+
+**Files:**
+- Modify: `nuke/python/genfill/node.py` (new knob `gf_resolution`, Enumeration `["auto", "1K", "2K", "4K"]`, default `auto`, next to quality; `ensure_current` adds it to old nodes), `nuke/python/genfill/backends/base.py` (`GenerationRequest.resolution`; `Backend.model_size(width, height, model="", resolution="auto")`; helper `resolution_budget(resolution, default_budget)` → 1K 1048576, 2K 4194304, 4K 16777216 pixels; `ModelSpec.extra["resolutions"]` = supported tiers), every backend's `model_size` and request params (Magnific `resolution` "1k"/"2k"/"4k" where the model lists it, Higgsfield `resolution`, Comfy Cloud/partner and fal size/`resolution` params, OpenAI max 3840x2160 for gpt-image-2+, Stability fixed ~1 MP, ComfyUI workflows: sidecar `pixels` is the 1K default and scales by tier up to `max_side`), `nuke/python/genfill/engine.py` (pass knob to `model_size` and request; log), `nuke/python/genfill/ui/panel.py` (resolution combo beside quality; info line "sends 2048 x 1152 (2K)")
+- Test: `tests/test_core.py`, backend tests, `tests/test_pipeline.py`
+
+**Acceptance Criteria:**
+- [ ] `auto` keeps today's sizes exactly (existing tests unchanged).
+- [ ] A tier above what the model supports is clamped to the model's largest tier, and the panel/log says so ("model max 2K").
+- [ ] Never upscale beyond the crop: if the context region in plate pixels is smaller than the tier budget, the native crop size (rounded to the model's multiple, respecting the model minimum) is sent.
+- [ ] Providers with a resolution parameter receive the matching value; tests assert it for Magnific, Higgsfield, fal, Comfy Cloud, OpenAI sizes.
+- [ ] Old nodes get `gf_resolution` = auto via `ensure_current`; pipeline test covers 2K end to end with the mock backend.
+
+**Verify:** `python3 -m unittest discover -s tests` → OK
+
+```json:metadata
+{"files": ["nuke/python/genfill/node.py", "nuke/python/genfill/backends/base.py", "nuke/python/genfill/backends/", "nuke/python/genfill/engine.py", "nuke/python/genfill/ui/panel.py", "tests/"], "verifyCommand": "python3 -m unittest discover -s tests", "acceptanceCriteria": ["auto unchanged", "clamp to model max with message", "no upscaling beyond crop", "provider resolution params set", "old nodes upgraded, 2K pipeline test"], "modelTier": "frontier"}
+```
+
+---
+
+### Task 10: Multi-line prompt
+
+**Goal:** Prompt (and negative prompt) are multi-line text fields in the panel and on the node.
+
+**Files:**
+- Modify: `nuke/python/genfill/ui/panel.py` (QPlainTextEdit, 3 lines tall, grows to 8, Ctrl/Cmd+Enter generates, Enter inserts a newline, placeholder kept), `nuke/python/genfill/node.py` (new nodes: `gf_prompt` and `gf_negative` as `nuke.Multiline_Eval_String_Knob`; old String_Knob nodes keep working — the panel reads/writes `.value()`), `nuke/python/genfill/engine.py` (`gf_info` summary uses the first line), `tests/fake_nuke.py` (Multiline knob if missing), `tests/test_pipeline.py`
+- Test: `tests/test_pipeline.py` (`test_multiline_prompt_round_trip`: prompt with newlines, brackets and `$` survives generate, state knob and `gf_info` stays one line)
+
+**Acceptance Criteria:**
+- [ ] Newlines survive into `GenerationRequest.prompt` and the state; `gf_info` shows only the first line.
+- [ ] TCL-sensitive characters in a multiline knob do not get evaluated (prompt read with `.value()`, never `.evaluate()`).
+- [ ] Ctrl/Cmd+Enter generates; plain Enter adds a line.
+
+**Verify:** `python3 -m unittest tests.test_pipeline -v` → all pass
+
+```json:metadata
+{"files": ["nuke/python/genfill/ui/panel.py", "nuke/python/genfill/node.py", "nuke/python/genfill/engine.py", "tests/fake_nuke.py", "tests/test_pipeline.py"], "verifyCommand": "python3 -m unittest tests.test_pipeline -v", "acceptanceCriteria": ["newlines survive, gf_info first line", "no TCL evaluation of prompt", "Ctrl/Cmd+Enter generates"], "modelTier": "standard"}
+```
+
+---
+
+### Task 11: Cost preview and credit balance
+
+**Goal:** Before generating, the panel shows what the current settings will cost, and for subscription providers the remaining credit balance.
+
+**Files:**
+- Create: `nuke/python/genfill/pricing.py` (static price tables: OpenAI per-image estimates by model/quality/size from token prices in research §2, Stability 5 credits/call, fal keyless price notes as fallback; `Quote(amount, unit, exact, note)`), `tests/test_pricing.py`
+- Modify: `nuke/python/genfill/backends/base.py` (`Backend.estimate(request) -> Quote|None`, `Backend.balance(api_key) -> Balance|None`, both default None, never interactive), `magnific.py` (`simulate_cost` with the exact tool + args GenFill would send, no references; retouch = N x quote; `account_balance` → credits.available, plan productName), `higgsfield.py` (`generate_image` `get_cost:true` with count 1, total = per-image x count, `exact=False` if count>1; `balance` → credits, plan), `comfy_cloud.py` (partner: static note "billed per Comfy credits" + `estimate_credits` for graph models; no balance), `comfyui.py` (free unless `api_nodes`; then "Comfy credits, see comfy.org"), `fal.py` (pricing API with the user's key, `GET https://api.fal.ai/v1/models/pricing?endpoint_id=`, tolerant parsing; fallback table; no balance), `openai_images.py`, `stability.py` (balance `GET https://api.stability.ai/v1/user/balance`, tolerant), `mock.py` (free), `nuke/python/genfill/ui/panel.py` (one muted line under Generate: "≈ 30 credits · balance 243,317 credits (Premium+)" / "≈ $0.12" / "free (your GPU)"; refreshed on a worker thread, debounced 600 ms after model/version/resolution/quality/variations change, cached per settings key 5 min, balance cached 60 s and refreshed after each generation; errors show "cost unknown")
+- Test: `tests/test_pricing.py`, backend tests (fakes return the research sample responses)
+
+**Acceptance Criteria:**
+- [ ] Estimates use the model size the backend would send for the current plate/selection (`model_size` with the last region if available, else the plate format) and the resolution/quality/count knobs.
+- [ ] Magnific and Higgsfield quotes come from the live preflight tools (never submit work); unit tests assert no generation tool is called.
+- [ ] Balance shown for Magnific and Higgsfield (and Stability if the endpoint answers); hidden for key-only services without a balance API (fal, OpenAI, Comfy).
+- [ ] No sign-in prompt, no Qt access off the main thread, Generate never waits for a quote.
+
+**Verify:** `python3 -m unittest tests.test_pricing tests.test_magnific tests.test_higgsfield -v` → all pass; full suite green
+
+```json:metadata
+{"files": ["nuke/python/genfill/pricing.py", "nuke/python/genfill/backends/base.py", "nuke/python/genfill/backends/", "nuke/python/genfill/ui/panel.py", "tests/test_pricing.py"], "verifyCommand": "python3 -m unittest tests.test_pricing tests.test_magnific tests.test_higgsfield -v", "acceptanceCriteria": ["estimate uses real send size and knobs", "live preflight quotes, no generation calls", "balance for Magnific/Higgsfield (+Stability)", "non-interactive, thread-safe, non-blocking"], "modelTier": "frontier"}
+```
+
+---
+
+### Task 12: Live verification (controller)
+
+
+**Goal:** A real generation through GenFill's own backend code on the local ComfyUI with the SDXL fixture, validation of all shipped workflows, and one cheap live check each of the new catalogue entries, resolution, cost quotes and balances (Magnific, Higgsfield).
 
 **Files:** none (results go to `tasks/todo.md` review)
 
@@ -553,7 +669,7 @@ class ComfyUIBackend(Backend):
 
 ---
 
-### Task 7: Final review, PR, merge
+### Task 13: Final review, PR, merge
 
 **Goal:** Final code review, PR against `claussteinmassl/GenFill` main, merge.
 
