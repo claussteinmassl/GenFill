@@ -85,8 +85,8 @@ COLOR_TOOLTIP = (
     "Log (ACEScct): keeps highlights up to ~222 (scene-linear); flatter look for the model.\n"
     "Input colorspace: always the Read's colorspace.\n"
     "Custom: the colorspace in 'custom colorspace'.\n"
-    "Backends that support it get 32-bit float in and out; the result goes back through the exact "
-    "inverse. Each variation remembers its encoding.")
+    "Every backend sends and receives 8-bit PNG; the result is decoded with the exact inverse. "
+    "Each variation remembers its encoding.")
 OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feathered selection.\n"
                   "Layer: just the generated fill in Source's format, premultiplied by the "
                   "expanded, feathered selection (alpha included), ready to Merge over anything. "
