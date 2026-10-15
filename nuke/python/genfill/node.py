@@ -43,7 +43,7 @@ PROBE_WRITE = "gf_probe_write"
 CROP_SRC = "gf_crop_src"
 REFORMAT_SRC = "gf_reformat_src"
 WRITE_SRC = "gf_write_src"            # 8-bit PNG (cloud / preview backends)
-WRITE_SRC_F = "gf_write_src_float"    # 32-bit float TIFF (internal)
+WRITE_SRC_F = "gf_write_src_float"    # legacy float TIFF Write; only in nodes made before 0.9
 TO_MODEL = "gf_to_model"
 TO_MODEL_LOG = "gf_to_model_log"
 TO_MODEL_OCIO = "gf_to_model_ocio"
@@ -65,7 +65,8 @@ OUT_SWITCH = "gf_output_switch"
 BLANK = "gf_layer_blank"
 LAYER = "gf_layer"
 
-WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_SRC_F, WRITE_MASK, WRITE_MASK_A)
+# The Writes every node has. Old nodes may also hold WRITE_SRC_F (disabled, never run).
+WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_MASK, WRITE_MASK_A)
 
 ROTO = "gf_roto"
 SEL_SHAPES, SEL_MASK, SEL_ALPHA = 0, 1, 2
@@ -126,13 +127,11 @@ def _place(node, col, row):
     node.setXYpos(int(col * 140), int(row * 70))
 
 
-def _make_write(name, channels, raw, col, row, inp, file_type="png", datatype="8 bit"):
-    w = nuke.nodes.Write(name=name, file_type=file_type)
+def _make_write(name, channels, raw, col, row, inp):
+    w = nuke.nodes.Write(name=name, file_type="png")
     w.setInput(0, inp)
     if "datatype" in w.knobs():
-        w["datatype"].setValue(datatype)
-    if file_type == "tiff" and "compression" in w.knobs():
-        w["compression"].setValue("none")
+        w["datatype"].setValue("8 bit")
     w["channels"].setValue(channels)
     if "create_directories" in w.knobs():
         w["create_directories"].setValue(True)
@@ -459,9 +458,6 @@ def _build_color_nodes(group):
             colorspace.set_raw(old_png, True)
         else:
             _make_write(WRITE_SRC, "rgb", True, 1, 5, tsw)
-        if group.node(WRITE_SRC_F) is None:
-            _make_write(WRITE_SRC_F, "rgb", True, 2, 5, tsw, file_type="tiff",
-                        datatype="32 bit float")
         # from model
         fl = _expression(FROM_MODEL_LOG, colorspace.DECODE_EXPRS, read, -1, 6.5)
         fo = nuke.nodes.OCIOColorSpace(name=FROM_MODEL_OCIO)

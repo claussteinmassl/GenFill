@@ -235,8 +235,6 @@ class Backend(object):
     default_model = ""
     models = ()             # suggestions shown in the UI
     description = ""
-    float_io = False        # True: takes 32-bit float TIFF in, returns float TIFF
-    result_ext = ".png"     # default; the engine names PNG/JPEG results by their content
     auth = "key"            # "key", "oauth" (browser sign-in) or "key_or_oauth"
     catalogue = ()          # ModelSpec entries, shown in the model version menu
     discoverable = False    # True: discover() lists the provider's models live

@@ -124,22 +124,27 @@ class NodeColorTests(unittest.TestCase):
         self.assertFalse(self.g.node(gfnode.READ_RESULT)["raw"].value())
         self.assertEqual(self.g.node(gfnode.FROM_MODEL)["which"].value(), cs.SWITCH_INDEX["none"])
 
-    def test_float_backends_get_float_tiff(self):
-        from genfill import backends
-        mock = backends.get("mock")
+    def test_source_goes_out_as_8bit_png(self):
         fake_nuke.EXECUTED[:] = []
-        try:
-            mock.float_io, mock.result_ext = True, ".tif"
-            gen = self._gen()
-        finally:
-            mock.float_io, mock.result_ext = False, ".png"
+        gen = self._gen()
         names = [e[0] for e in fake_nuke.EXECUTED]
-        self.assertIn(gfnode.WRITE_SRC_F, names)
-        self.assertNotIn(gfnode.WRITE_SRC, names)
-        self.assertTrue(gen["files"][0].endswith(".tif"))
-        w = self.g.node(gfnode.WRITE_SRC_F)
-        self.assertEqual((w["file_type"].value(), w["datatype"].value()), ("tiff", "32 bit float"))
+        self.assertIn(gfnode.WRITE_SRC, names)
+        self.assertIsNone(self.g.node(gfnode.WRITE_SRC_F))     # no float TIFF Write any more
+        self.assertTrue(gen["files"][0].endswith(".png"))
 
+    def test_old_node_with_float_write_still_works(self):
+        # Nodes made before 0.9 contain the float TIFF Write; it is left alone and unused.
+        with self.g:
+            nuke.nodes.Write(name=gfnode.WRITE_SRC_F, file_type="tiff")["disable"].setValue(True)
+        gfnode.ensure_current(self.g)
+        self.assertFalse(gfnode.ensure_current(self.g))
+        self.assertIsNotNone(self.g.node(gfnode.WRITE_SRC_F))
+        fake_nuke.EXECUTED[:] = []
+        gen = self._gen()
+        names = [e[0] for e in fake_nuke.EXECUTED]
+        self.assertNotIn(gfnode.WRITE_SRC_F, names)
+        self.assertIn(gfnode.WRITE_SRC, names)
+        self.assertTrue(gen["files"][0].endswith(".png"))
 
 if __name__ == "__main__":
     unittest.main()

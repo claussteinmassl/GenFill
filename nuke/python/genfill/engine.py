@@ -298,7 +298,7 @@ def delete_variation(node, gi, vi, delete_file=True):
 
 
 def _thumb_path(path):
-    """Float results have an 8-bit preview next to them for the panel."""
+    """Float TIFF results of the old Local AI (<= 0.8) have an 8-bit preview next to them."""
     preview = os.path.splitext(path)[0] + "_preview.png"
     return preview if os.path.exists(preview) else path
 
@@ -442,14 +442,13 @@ def _prepare(node, backend, frame, job_dir):
     transfer = resolve_transfer(node)
     colorspace.configure(_internal(node, gfnode.TO_MODEL), _internal(node, gfnode.TO_MODEL_LOG),
                          _internal(node, gfnode.TO_MODEL_OCIO), transfer, "to")
-    float_io = getattr(backend, "float_io", False)
     files = {
-        "image": os.path.join(job_dir, "source.tif" if float_io else "source.png"),
+        "image": os.path.join(job_dir, "source.png"),
         "mask": os.path.join(job_dir, "mask.png"),
         "mask_alpha": os.path.join(job_dir, "mask_alpha.png"),
         "transfer": transfer,
     }
-    _execute(node, gfnode.WRITE_SRC_F if float_io else gfnode.WRITE_SRC, files["image"], frame)
+    _execute(node, gfnode.WRITE_SRC, files["image"], frame)
     _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
     _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
     return reg, mw, mh, (fw, fh), files
@@ -671,17 +670,12 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
         gflog.info("%s returned %d image(s)", backend.id, len(images))
         files = []
         names = meta.get("var_names") or []
-        ext = getattr(backend, "result_ext", ".png")
-        for i, item in enumerate(images):
-            data, preview = item if isinstance(item, tuple) else (item, None)
-            sniffed = backends.base.sniff_image(data) if not backend.float_io else None
+        for i, data in enumerate(images):
+            sniffed = backends.base.sniff_image(data)
             base = names[i] if i < len(names) else "var_%02d" % (i + 1)
-            name = base + (sniffed if sniffed in (".png", ".jpg") else ext)
+            name = base + (sniffed if sniffed in (".png", ".jpg") else ".png")
             with open(os.path.join(job_dir, name), "wb") as fh:
                 fh.write(data)
-            if preview:
-                with open(os.path.join(job_dir, base + "_preview.png"), "wb") as fh:
-                    fh.write(preview)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
         send(_finish, (node, uid, meta))
