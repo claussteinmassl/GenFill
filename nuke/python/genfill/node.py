@@ -142,6 +142,22 @@ def backend_labels():
     return [b.label for b in backends.all_backends()]
 
 
+BACKEND_TOOLTIP = ("Which generator to use. API keys and cloud accounts are set with the "
+                   "API Keys & Accounts button, never saved in the script.")
+MODEL_TOOLTIP = ("Model id for the chosen backend; pick one from the panel's version menu or "
+                 "type any id the provider offers. Empty = backend default.")
+
+
+def model_for_backend(current, backend):
+    """The gf_model value to keep after switching to ``backend``.
+
+    An id that belongs to the previous backend would make the next Generate fail,
+    so anything the new backend does not list is cleared (= backend default).
+    """
+    current = (current or "").strip()
+    return current if current in backend.model_ids() else ""
+
+
 def backend_for(node):
     label = node["gf_backend"].value()
     for b in backends.all_backends():
@@ -518,6 +534,19 @@ def ensure_current(group):
         changed = True
     if "gf_transfer" in group.knobs():
         group["gf_transfer"].setLabel("custom colorspace")
+    knob = group.knobs().get("gf_backend")
+    labels = backend_labels()
+    if knob is not None and list(knob.values()) != labels:
+        label = knob.value()        # restore by label: indexes shifted when backends were added
+        knob.setValues(labels)
+        knob.setValue(label if label in labels else labels[0])
+        changed = True
+    if knob is not None:
+        knob.setTooltip(BACKEND_TOOLTIP)
+    if "gf_model" in group.knobs():
+        group["gf_model"].setTooltip(MODEL_TOOLTIP)
+    if "gf_keys_btn" in group.knobs():
+        group["gf_keys_btn"].setLabel("API Keys & Accounts...")
     knob = group.knobs().get("gf_output")
     if knob is not None and list(knob.values()) != OUTPUT_MODES:
         idx = int(knob.getValue())
@@ -609,12 +638,10 @@ def _add_knobs(group):
     # ---- Settings tab ----------------------------------------------------
     group.addKnob(nuke.Tab_Knob("gf_settings_tab", "Settings"))
     k = nuke.Enumeration_Knob("gf_backend", "model", backend_labels())
-    k.setTooltip("Which generator to use. API keys and cloud accounts are set with the "
-                 "API Keys & Accounts button, never saved in the script.")
+    k.setTooltip(BACKEND_TOOLTIP)
     group.addKnob(k)
     k = nuke.String_Knob("gf_model", "model version", "")
-    k.setTooltip("Model id for the chosen backend; pick one from the panel's version menu or "
-                 "type any id the provider offers. Empty = backend default.")
+    k.setTooltip(MODEL_TOOLTIP)
     group.addKnob(k)
     k = nuke.Enumeration_Knob("gf_quality", "quality", QUALITY_MODES)
     k.setTooltip("Passed to backends that support it (OpenAI).")

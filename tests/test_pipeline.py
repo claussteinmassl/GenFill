@@ -140,6 +140,24 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("gf_shapes", g.knobs())
         self.assertFalse(gfnode.ensure_current(g))
 
+    def test_old_backend_menu_is_upgraded_by_label(self):
+        g = self.g
+        old = ["Local", "Stability", "OpenAI", "Offline Preview (no AI)"]
+        g["gf_backend"].setValues(old)
+        g["gf_backend"].setValue(3)                    # Offline Preview, index 3 in old menus
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_backend"].values(), gfnode.backend_labels())
+        self.assertEqual(g["gf_backend"].value(), "Offline Preview (no AI)")
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_model_cleared_when_not_in_new_backend(self):
+        from genfill import backends
+        self.assertEqual(gfnode.model_for_backend("gpt-image-1.5", backends.get("fal")), "")
+        fal = backends.get("fal")
+        keep = fal.model_ids()[0]
+        self.assertEqual(gfnode.model_for_backend(keep, fal), keep)
+        self.assertEqual(gfnode.model_for_backend("", fal), "")
+
     def test_generate_and_select(self):
         g = self.g
         self.assertTrue(engine.generate(g, "a red vintage car"))

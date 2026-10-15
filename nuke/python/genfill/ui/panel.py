@@ -83,6 +83,8 @@ class NukeController(object):
 
     def set_backend_label(self, label):
         self.node["gf_backend"].setValue(label)
+        self.set_model_version(self._gfnode.model_for_backend(
+            self.node["gf_model"].value(), self._gfnode.backend_for(self.node)))
 
     def backend_description(self):
         return self._gfnode.backend_for(self.node).description
