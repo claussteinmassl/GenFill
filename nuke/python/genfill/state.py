@@ -11,7 +11,8 @@ State layout::
       "version": 1,
       "generations": [
         {
-          "id": "g001_20261012-201500",
+          "id": "g001_20261012-201500",  # folder name (GENFILL_NAME pattern)
+          "number": 1,
           "prompt": "a red vintage car",
           "backend": "stability", "model": "",
           "seed": 1234, "frame": 1001,
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 VERSION = 1
 
@@ -133,5 +135,18 @@ def remove_variation(state, gi, vi):
     return state, removed
 
 
+def generation_number(gen):
+    """The number GenFill gave a generation (``number``, or ``gNNN`` in older ids), or 0."""
+    try:
+        if gen.get("number"):
+            return int(gen["number"])
+    except (TypeError, ValueError):
+        pass
+    m = re.match(r"g(\d+)", str(gen.get("id", "")))
+    return int(m.group(1)) if m else 0
+
+
 def next_generation_number(state):
-    return len(state["generations"]) + 1
+    """One above every number used so far, so a deleted generation's number is never reused."""
+    gens = state["generations"]
+    return max([len(gens)] + [generation_number(g) for g in gens]) + 1

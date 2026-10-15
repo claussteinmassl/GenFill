@@ -33,7 +33,8 @@ class StabilityBackend(Backend):
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         if not api_key:
-            raise BackendError("No Stability API key set (STABILITY_API_KEY or API Keys...).")
+            raise BackendError("No Stability API key set (STABILITY_API_KEY or "
+                               "API Keys & Accounts...).")
         image = request.read("image_path")
         mask = request.read("mask_path")
         erase = not request.prompt.strip()

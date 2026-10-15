@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import base64
 import datetime
+import getpass
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 
 import nuke
 
-from . import backends, colorspace, config, pngio, region, state as gfstate
+from . import backends, colorspace, config, naming, pngio, region, state as gfstate
 from . import node as gfnode
 from . import log as gflog
 from .backends import BackendError, Cancelled, GenerationRequest
@@ -74,29 +76,75 @@ def is_running(node):
 # paths
 # --------------------------------------------------------------------------
 
-def cache_root(node):
-    override = ""
+def _script_tokens(node):
+    """Tokens every path or name pattern may use (see naming.py)."""
+    script = nuke.root().name()
+    saved = bool(script) and script != "Root"
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    return {
+        "script_dir": os.path.dirname(script) if saved else tempfile.gettempdir(),
+        "script": os.path.splitext(os.path.basename(script))[0] if saved else "untitled",
+        "node": naming.safe_name(node.name()),
+        "uid": _uid(node),
+        "user": naming.safe_name(user),
+    }
+
+
+def _root_pattern(node):
+    """``(pattern, source)`` of the cache root: knob, then GENFILL_CACHE, then defaults."""
     knob = node["gf_cache_dir"]
     try:
         override = knob.evaluate() or ""
     except Exception:
         override = knob.value() or ""
-    override = override.strip()
-    if override:
-        return override
+    if override.strip():
+        return override.strip(), "cache folder knob"
+    env = config.cache_root_pattern()
+    if env:
+        return env, naming.ENV_ROOT
     script = nuke.root().name()
     if script and script != "Root":
-        return os.path.join(os.path.dirname(script), "genfill_cache")
-    return config.default_cache_root()
+        return os.path.join("{script_dir}", "genfill_cache"), "default"
+    return config.default_cache_root(), "default"
+
+
+def _expand_root(node):
+    pattern, source = _root_pattern(node)
+    tokens = _script_tokens(node)
+    path, missing = naming.root_path(pattern, dict((k, tokens[k]) for k in naming.ROOT_TOKENS))
+    if missing:
+        gflog.warning("%s %r: environment variable(s) not set: %s", source, pattern,
+                      ", ".join(missing))
+    per_node = not (naming.uses(pattern, "uid") or naming.uses(pattern, "node"))
+    return path, per_node
+
+
+def cache_root(node):
+    """Root folder of the cache (without the per-node folder).
+
+    Raises:
+        naming.PatternError: The cache folder pattern is invalid.
+    """
+    return _expand_root(node)[0]
 
 
 def cache_dir(node):
-    return os.path.join(cache_root(node), _uid(node))
+    """This node's folder: ``<root>/<node id>``, or the root itself when the pattern
+    already names the node (``{uid}`` or ``{node}``)."""
+    root, per_node = _expand_root(node)
+    return os.path.join(root, _uid(node)) if per_node else root
 
 
 def resolve(node, gen, rel_path):
     """Absolute path of a variation, tolerant of moved/unsaved scripts."""
-    candidates = [os.path.join(cache_dir(node), rel_path)]
+    candidates = []
+    try:
+        candidates.append(os.path.join(cache_dir(node), rel_path))
+    except naming.PatternError as exc:
+        gflog.warning("%s", exc)
     if gen.get("abs_dir"):
         candidates.append(os.path.join(gen["abs_dir"], os.path.basename(rel_path)))
     for c in candidates:
@@ -273,9 +321,14 @@ def thumbnails(node):
 
 
 def open_cache(node):
-    path = cache_dir(node)
+    try:
+        path = cache_dir(node)
+        root = cache_root(node)
+    except naming.PatternError as exc:
+        nuke.message("The cache folder pattern is invalid:\n%s" % exc)
+        return
     if not os.path.isdir(path):
-        path = cache_root(node)
+        path = root
     if not os.path.isdir(path):
         nuke.message("Nothing generated yet.\nCache folder will be:\n%s" % cache_dir(node))
         return
@@ -376,6 +429,53 @@ def _prepare(node, backend, frame, job_dir):
 # generate
 # --------------------------------------------------------------------------
 
+def _name_generation(node, backend, st, frame, count):
+    """Number, folder name, folder and variation file names of the next generation.
+
+    Names follow ``GENFILL_NAME`` / ``GENFILL_VARIATION_NAME`` (see naming.py). The number
+    is GenFill's: it is bumped until the folder does not exist yet.
+
+    Raises:
+        naming.PatternError: A pattern is invalid.
+    """
+    now = datetime.datetime.now()
+    tokens = _script_tokens(node)
+    tokens.update(date=now.strftime("%Y%m%d"), time=now.strftime("%H%M%S"), frame=frame,
+                  backend=backend.id,
+                  model=naming.safe_name(node["gf_model"].value().strip() or
+                                         getattr(backend, "default_model", "") or "default"))
+    folder = cache_dir(node)
+    name_pattern, var_pattern = config.name_pattern(), config.variation_pattern()
+    number = gfstate.next_generation_number(st)
+    for _ in range(1000):
+        tokens["gen"] = number
+        gen_id, missing = naming.generation_name(name_pattern, dict(
+            (k, tokens[k]) for k in naming.NAME_TOKENS))
+        job_dir = os.path.join(folder, gen_id)
+        if not os.path.exists(job_dir):
+            break
+        number += 1
+    else:
+        raise naming.PatternError("No free generation folder for %r in %s" % (name_pattern, folder))
+    if missing:
+        gflog.warning("%s %r: environment variable(s) not set: %s", naming.ENV_NAME,
+                      name_pattern, ", ".join(missing))
+    var_names = []
+    for i in range(count):
+        tokens.update(name=gen_id, var=i + 1)
+        var_name, missing = naming.variation_name(var_pattern, dict(
+            (k, tokens[k]) for k in naming.VARIATION_TOKENS))
+        var_names.append(var_name)
+    if missing:
+        gflog.warning("%s %r: environment variable(s) not set: %s", naming.ENV_VARIATION,
+                      var_pattern, ", ".join(missing))
+    if len(set(var_names)) != len(var_names):
+        raise naming.PatternError("%s %r gives the same name to two variations." % (
+            naming.ENV_VARIATION, var_pattern))
+    gflog.info("naming: generation %d -> %s (%s)", number, job_dir, ", ".join(var_names))
+    return number, gen_id, job_dir, var_names
+
+
 def generate(node, prompt=None, blocking=False):
     """Start a generation. Returns False if it could not start.
 
@@ -404,16 +504,16 @@ def generate(node, prompt=None, blocking=False):
             from .ui import localai_dialog
             localai_dialog.show()
         return False
-    api_key = ""
+    # Keys can also be optional (Comfy Cloud: a key, or a browser sign-in).
+    api_key = config.get_api_key(backend.id, backend.env_var)
     if backend.needs_key:
-        api_key = config.get_api_key(backend.id, backend.env_var)
         if not api_key:
             gflog.info("No API key for %s; showing the API Keys dialog", backend.id)
             from .ui import settings
             settings.show(focus=backend.id)
             api_key = config.get_api_key(backend.id, backend.env_var)
             if not api_key:
-                msg = ("No API key set for %s. Add one with API Keys..., or switch the model "
+                msg = ("No API key set for %s. Add one with API Keys & Accounts..., or switch the model "
                        "to Offline Preview to test without a key." % backend.label)
                 gflog.warning(msg)
                 _set_status(_uid(node), running=False, message="", error=msg)
@@ -425,9 +525,15 @@ def generate(node, prompt=None, blocking=False):
                len(st["generations"]), len(node["gf_state"].value() or ""))
     frame = int(nuke.frame())
     prev_frame = int(node["gf_frame"].value())
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    gen_id = "g%03d_%s" % (gfstate.next_generation_number(st), stamp)
-    job_dir = os.path.join(cache_dir(node), gen_id)
+    count = max(1, min(10, int(node["gf_variations"].value())))
+    try:
+        number, gen_id, job_dir, var_names = _name_generation(node, backend, st, frame, count)
+    except naming.PatternError as exc:
+        msg = "Cannot name the result: %s" % exc
+        gflog.warning(msg)
+        _set_status(uid, running=False, message="", error=msg)
+        _notify(msg)
+        return False
 
     root = nuke.root()
     proxy = root["proxy"].value()
@@ -456,7 +562,6 @@ def generate(node, prompt=None, blocking=False):
             root["proxy"].setValue(True)
 
     seed = int(node["gf_seed"].value())
-    count = max(1, min(10, int(node["gf_variations"].value())))
     request = GenerationRequest(
         image_path=files["image"], mask_path=files["mask"],
         mask_alpha_path=files["mask_alpha"], prompt=prompt, width=mw, height=mh,
@@ -465,6 +570,8 @@ def generate(node, prompt=None, blocking=False):
     request.transfer = files["transfer"]
     meta = {
         "id": gen_id,
+        "number": number,
+        "var_names": var_names,
         "prompt": prompt,
         "backend": backend.id,
         "model": request.model,
@@ -541,14 +648,17 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
         images = backend.generate(request, api_key, progress=progress, cancelled=cancelled)
         gflog.info("%s returned %d image(s)", backend.id, len(images))
         files = []
+        names = meta.get("var_names") or []
         ext = getattr(backend, "result_ext", ".png")
         for i, item in enumerate(images):
             data, preview = item if isinstance(item, tuple) else (item, None)
-            name = "var_%02d%s" % (i + 1, ext)
+            sniffed = backends.base.sniff_image(data) if not backend.float_io else None
+            base = names[i] if i < len(names) else "var_%02d" % (i + 1)
+            name = base + (sniffed if sniffed in (".png", ".jpg") else ext)
             with open(os.path.join(job_dir, name), "wb") as fh:
                 fh.write(data)
             if preview:
-                with open(os.path.join(job_dir, "var_%02d_preview.png" % (i + 1)), "wb") as fh:
+                with open(os.path.join(job_dir, base + "_preview.png"), "wb") as fh:
                     fh.write(preview)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
@@ -584,6 +694,7 @@ def _finish(node, uid, meta):
             return
         meta = dict(meta)
         meta.pop("prev_frame", None)
+        meta.pop("var_names", None)
         st = gfstate.add_generation(get_state(node), meta, select_first=True)
         _save_state(node, st)
         readback = get_state(node)

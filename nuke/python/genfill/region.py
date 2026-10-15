@@ -146,3 +146,13 @@ def closest_size(w, h, sizes):
     """Return the entry of ``sizes`` [(w, h), ...] whose aspect is closest (log scale)."""
     a = math.log(float(w) / float(h))
     return min(sizes, key=lambda s: abs(math.log(float(s[0]) / s[1]) - a))
+
+
+def aspect_sizes(ratios, budget, multiple=16):
+    """``["16:9", "1:1", ...]`` -> sizes near ``budget`` pixels, as ``[(w, h, "16:9"), ...]``."""
+    out = []
+    for r in ratios:
+        a, b = (float(x) for x in r.split(":"))
+        w, h = scale_to_pixel_budget(a, b, budget, multiple, min_side=multiple)
+        out.append((w, h, r))
+    return out

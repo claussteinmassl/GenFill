@@ -140,6 +140,24 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("gf_shapes", g.knobs())
         self.assertFalse(gfnode.ensure_current(g))
 
+    def test_old_backend_menu_is_upgraded_by_label(self):
+        g = self.g
+        old = ["Local", "Stability", "OpenAI", "Offline Preview (no AI)"]
+        g["gf_backend"].setValues(old)
+        g["gf_backend"].setValue(3)                    # Offline Preview, index 3 in old menus
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_backend"].values(), gfnode.backend_labels())
+        self.assertEqual(g["gf_backend"].value(), "Offline Preview (no AI)")
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_model_cleared_when_not_in_new_backend(self):
+        from genfill import backends
+        self.assertEqual(gfnode.model_for_backend("gpt-image-1.5", backends.get("fal")), "")
+        fal = backends.get("fal")
+        keep = fal.model_ids()[0]
+        self.assertEqual(gfnode.model_for_backend(keep, fal), keep)
+        self.assertEqual(gfnode.model_for_backend("", fal), "")
+
     def test_generate_and_select(self):
         g = self.g
         self.assertTrue(engine.generate(g, "a red vintage car"))
@@ -207,6 +225,37 @@ class PipelineTests(unittest.TestCase):
                          "a [bracketed] {prompt} $var")
         # Old plain-JSON state still loads.
         self.assertEqual(engine.decode_state('{"generations": []}')["generations"], [])
+
+    def test_pipeline_env_sets_folder_and_names(self):
+        from unittest import mock
+        env = {"SHOW": "demo", "SHOT": "sh010", "TASK": "comp",
+               "GENFILL_CACHE": os.path.join(self.tmp, "jobs", "$SHOW", "${SHOT}", "{node}"),
+               "GENFILL_NAME": "${SHOT}_${TASK}_genfill_v{gen:03d}",
+               "GENFILL_VARIATION_NAME": "{name}_var{var:02d}"}
+        with mock.patch.dict(os.environ, env):
+            self.assertTrue(engine.generate(self.g, "crate", blocking=True), engine.status(self.g))
+            folder = os.path.join(self.tmp, "jobs", "demo", "sh010", self.g.name())
+            # A folder that already exists is skipped: the number goes up, nothing is overwritten.
+            os.makedirs(os.path.join(folder, "sh010_comp_genfill_v002"))
+            self.assertTrue(engine.generate(self.g, "crate", blocking=True), engine.status(self.g))
+        gens = engine.get_state(self.g)["generations"]
+        self.assertEqual([g["id"] for g in gens],
+                         ["sh010_comp_genfill_v001", "sh010_comp_genfill_v003"])
+        self.assertEqual([g["number"] for g in gens], [1, 3])
+        self.assertEqual(gens[0]["files"][0], "sh010_comp_genfill_v001/sh010_comp_genfill_v001_var01.png")
+        for f in gens[1]["files"]:
+            self.assertTrue(os.path.exists(os.path.join(folder, f)), f)
+        self.assertNotIn("var_names", gens[0])
+        read = self.g.node(gfnode.READ_RESULT)["file"].value()
+        self.assertTrue(read.startswith(folder.replace("\\", "/")), read)
+
+    def test_bad_name_pattern_stops_before_generating(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"GENFILL_NAME": "{shot}_v{gen}"}):
+            self.assertFalse(engine.generate(self.g, "x", blocking=True))
+        self.assertIn("Unknown token {shot}", engine.status(self.g)["error"])
+        self.assertEqual(fake_nuke.EXECUTED, [])
+        self.assertFalse(engine.is_running(self.g))
 
     def test_missing_key_reports_instead_of_silently_returning(self):
         from unittest import mock

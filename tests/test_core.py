@@ -193,8 +193,15 @@ class BackendTests(unittest.TestCase):
                                       seed=7, count=count)
 
     def test_registry(self):
-        self.assertEqual(backends.ids(), ["local", "stability", "openai", "mock"])
+        self.assertEqual(backends.ids(), ["local", "stability", "openai", "fal", "magnific",
+                                          "higgsfield", "comfy", "mock"])
         self.assertEqual(backends.get("mock").label, "Offline Preview (no AI)")
+
+    def test_dialog_rows(self):
+        self.assertEqual([b.id for b in backends.key_backends()],
+                         ["stability", "openai", "fal", "comfy"])
+        self.assertEqual([b.id for b in backends.account_backends()],
+                         ["magnific", "higgsfield", "comfy"])
 
     def test_multipart(self):
         body, ctype = base.encode_multipart({"a": "1", "skip": None},

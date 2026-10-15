@@ -65,6 +65,7 @@ class NukeController(object):
     def signature(self):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
+                n["gf_model"].value(),
                 tuple(sorted(self._engine.status(n).items())))
 
     def prompt(self):
@@ -82,9 +83,24 @@ class NukeController(object):
 
     def set_backend_label(self, label):
         self.node["gf_backend"].setValue(label)
+        self.set_model_version(self._gfnode.model_for_backend(
+            self.node["gf_model"].value(), self._gfnode.backend_for(self.node)))
 
     def backend_description(self):
         return self._gfnode.backend_for(self.node).description
+
+    def model_version(self):
+        return self.node["gf_model"].value().strip()
+
+    def set_model_version(self, text):
+        text = (text or "").strip()
+        if text != self.node["gf_model"].value().strip():
+            self.node["gf_model"].setValue(text)
+
+    def model_catalogue(self):
+        """(default_model, [(id, label, note), ...]) of the current backend."""
+        b = self._gfnode.backend_for(self.node)
+        return b.default_model, [(m.id, m.label, m.note) for m in b.catalogue]
 
     def status(self):
         return self._engine.status(self.node)
@@ -282,6 +298,16 @@ class GenFillPanel(QtWidgets.QWidget):
         self.model.addItems(self.ctl.backend_labels())
         self.model.currentTextChanged.connect(self._on_model)
         head.addWidget(self.model)
+        self.version = QtWidgets.QComboBox()
+        self.version.setObjectName("gfVersion")
+        self.version.setEditable(True)
+        self.version.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        self.version.setMinimumContentsLength(14)
+        self.version.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.version.activated.connect(self._on_version)
+        self.version.lineEdit().editingFinished.connect(self._on_version_typed)
+        self._version_backend = None
+        head.addWidget(self.version)
         self.local_btn = QtWidgets.QToolButton()
         self.local_btn.setObjectName("gfIcon")
         self.local_btn.setText(u"\u2699 Local AI...")
@@ -413,6 +439,48 @@ class GenFillPanel(QtWidgets.QWidget):
             self.ctl.set_backend_label(label)
 
     @_safe
+    def _on_version(self, index):
+        """A catalogue entry was picked: store its id ("" = backend default)."""
+        data = self.version.itemData(index)
+        self.ctl.set_model_version(data if data is not None else self.version.itemText(index))
+
+    @_safe
+    def _on_version_typed(self, *args):
+        """Free text: a displayed catalogue label maps back to its id."""
+        text = self.version.currentText().strip()
+        idx = self.version.findText(text)
+        if idx >= 0:
+            text = self.version.itemData(idx) or ""
+        self.ctl.set_model_version(text)
+
+    def _fill_version(self):
+        """Rebuild the version items for the current backend and show gf_model."""
+        default, entries = self.ctl.model_catalogue()
+        key = (self.ctl.backend_label(), default, tuple(e[0] for e in entries))
+        if key != self._version_backend:
+            self._version_backend = key
+            self.version.blockSignals(True)
+            self.version.clear()
+            self.version.addItem("Default (%s)" % default if default else "Default", "")
+            for mid, label, note in entries:
+                self.version.addItem(label, mid)
+                if note:
+                    self.version.setItemData(self.version.count() - 1, note, Qt.ToolTipRole)
+            self.version.blockSignals(False)
+        if self.version.lineEdit().hasFocus():
+            return
+        current = self.ctl.model_version()
+        idx = self.version.findData(current)
+        self.version.blockSignals(True)
+        if idx >= 0:
+            self.version.setCurrentIndex(idx)
+        else:
+            self.version.setEditText(current)
+        self.version.blockSignals(False)
+        self.version.setToolTip("Model version (id); pick one or type any id the provider "
+                                "offers. Default = backend default.")
+
+    @_safe
     def _on_generate(self, *args):
         if self.ctl.status().get("running"):
             self.ctl.cancel()
@@ -502,6 +570,7 @@ class GenFillPanel(QtWidgets.QWidget):
             self.model.setCurrentText(label)
             self.model.blockSignals(False)
         self.model.setToolTip(self.ctl.backend_description())
+        self._fill_version()
         self.local_btn.setVisible(label.startswith("Local"))
 
         # prompt (don't fight the user while typing)

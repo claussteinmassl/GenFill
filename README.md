@@ -10,14 +10,15 @@ no 8-bit sRGB export, no clipped highlights.
 - **One node, one panel.** The selection, prompt, variations, blend controls and output all
   live on the GenerativeFill node. The Roto tools appear in the Viewer as soon as its panel is open.
 - **Free and local.** FLUX.1 Fill and LaMa run on your NVIDIA GPU inside the plugin. Nothing is
-  uploaded and there are no tokens. Cloud models (Stability AI, OpenAI) are optional.
+  uploaded and there are no tokens. Cloud models (Stability AI, OpenAI, fal.ai, Magnific,
+  Higgsfield, Comfy Cloud) are optional.
 - **Linear-safe.** An invertible color encoding plus 32-bit float transport means generated
   pixels come back into your working space with highlights above 1.0 intact. See
   [Color science](#color-science-a-linear-pipeline-with-display-referred-models).
 - **Farm-safe.** The node is a Group of native Nuke nodes. Once you've picked a variation, the
   script renders anywhere, even where GenFill isn't installed.
 
-Current version: **0.7.1** (see [CHANGELOG.md](CHANGELOG.md)).
+Current version: **0.8.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ---
 
@@ -88,10 +89,69 @@ The model size is picked from your VRAM and can be changed in the dialog:
 | High (Q6_K) | 9.9 GB | 16 GB+ |
 | Maximum (Q8_0) | 12.7 GB | 24 GB |
 
-### 3. Cloud keys (optional)
+### 3. Cloud keys and accounts (optional)
 
-**GenFill > API Keys...** or set `STABILITY_API_KEY` / `OPENAI_API_KEY`. Keys are stored in
-`~\.nuke\genfill\config.json`, never in .nk scripts.
+Open **GenFill > API Keys & Accounts...** (also on the node: *API Keys & Accounts...*).
+
+| Provider | How to connect |
+|---|---|
+| Stability AI, OpenAI | Paste the key, or set `STABILITY_API_KEY` / `OPENAI_API_KEY` |
+| fal.ai | Paste the key, or set `FAL_KEY` |
+| Comfy Cloud | Optional API key (`COMFY_API_KEY`; keys start with `comfyui-`), or **Sign in** |
+| Magnific, Higgsfield | **Sign in**: your browser opens once; tokens then refresh silently |
+
+Keys and sign-in tokens are stored in `~\.nuke\genfill\config.json`, never in .nk scripts.
+**Generate** also starts the sign-in automatically if it's needed, so you can skip the dialog.
+
+### 4. Pipeline setup (environment variables)
+
+Everything a studio deploys can come from environment variables, which a pipeline tool sets
+when it launches Nuke or opens a shot. GenFill reads them on **every Generate**, so changing
+them per shot (e.g. `os.environ["SHOT"] = "sh020"` in an open-script callback) needs no restart.
+
+| Variable | Meaning |
+|---|---|
+| `STABILITY_API_KEY`, `OPENAI_API_KEY`, `FAL_KEY`, `COMFY_API_KEY` | API keys. They win over keys saved in the dialog. Magnific and Higgsfield have no API keys (browser sign-in only) |
+| `GENFILL_CACHE` | Root folder for results. Used unless the node's *cache folder* knob is set |
+| `GENFILL_NAME` | Name of each generation's folder. Default `g{gen:03d}_{date}-{time}` |
+| `GENFILL_VARIATION_NAME` | File name of each variation (without extension). Default `var_{var:02d}` |
+| `GENFILL_LOG` | Log file path |
+
+The three path and name variables are **patterns**: they can use any environment variable as
+`$VAR`, `${VAR}` or `%VAR%` (on every platform), plus these tokens, with optional
+[format](https://docs.python.org/3/library/string.html#formatspec) such as `{gen:04d}`:
+
+| Token | Value | In |
+|---|---|---|
+| `{script_dir}` | Folder of the .nk script (temp folder if unsaved) | cache |
+| `{script}` | Script name without `.nk` (`untitled` if unsaved) | all |
+| `{node}`, `{uid}` | Node name, node id | all |
+| `{user}` | Login name | all |
+| `{gen}` | Generation number, given by GenFill | name, variation |
+| `{date}`, `{time}` | `20261015`, `143000` | name, variation |
+| `{frame}`, `{backend}`, `{model}` | Reference frame, backend id (`fal`), model id (`default` if empty) | name, variation |
+| `{name}`, `{var}` | The generation's folder name, variation number | variation |
+
+Example: a pipeline tool sets `SHOW`, `SHOT` and `TASK`, and the studio's Nuke environment sets
+
+```
+GENFILL_CACHE=/jobs/$SHOW/$SHOT/comp/genfill/{node}
+GENFILL_NAME=${SHOT}_${TASK}_genfill_v{gen:03d}
+GENFILL_VARIATION_NAME={name}_var{var:02d}
+```
+
+which writes `/jobs/demo/sh010/comp/genfill/GenerativeFill1/sh010_comp_genfill_v001/sh010_comp_genfill_v001_var01.png`.
+
+- GenFill always numbers generations itself, and never reuses a number. If `GENFILL_NAME` has no
+  `{gen}` (or `GENFILL_VARIATION_NAME` no `{var}`), the number is appended.
+- A cache pattern without `{uid}` or `{node}` gets a folder per node (`<root>/<node id>`), so two
+  nodes never mix their results. A relative cache path is taken from the script's folder.
+- Names keep only letters, digits, `.`, `_` and `-`; anything else becomes `_`. An unset
+  variable expands to nothing and is logged. An unknown token stops Generate with a message
+  before anything is rendered or paid for.
+- Without a pipeline the same settings can go into `~/.nuke/genfill/config.json` as
+  `cache_root` (unsaved scripts only), `name_pattern` and `variation_pattern`; environment
+  variables win.
 
 ### Check the build
 
@@ -145,7 +205,7 @@ Source ── GenerativeFill ── output
 
 | Knob | Meaning |
 |---|---|
-| model / model version | Backend, and an optional model override for cloud backends (e.g. `gpt-image-1.5`) |
+| model / model version | Backend, and the model of a cloud backend: pick from the version menu next to *Model* (empty = default) or type any id the provider accepts (e.g. `gpt-image-1.5`) |
 | quality | Speed vs quality (local: number of steps; OpenAI: quality level) |
 | variations | Variations per click (default 3, like Photoshop) |
 | seed | 0 = new random seed each click |
@@ -155,7 +215,7 @@ Source ── GenerativeFill ── output
 | **color pipeline** | How the plate is encoded for the model. See [Color science](#color-science-a-linear-pipeline-with-display-referred-models) |
 | display colorspace | The display transform to use (`auto` = picked from your OCIO config, e.g. `Output - Rec.709`) |
 | custom colorspace | Used when *color pipeline* is *Custom* |
-| cache folder | Where results are stored. Empty = `<script folder>/genfill_cache/<node id>` |
+| cache folder | Where results are stored. Empty = `GENFILL_CACHE` if set, else `<script folder>/genfill_cache/<node id>`. See [Pipeline setup](#4-pipeline-setup-environment-variables) |
 | reference frame | Frame the selected variation was generated on |
 
 ### What happens on Generate
@@ -183,7 +243,31 @@ variation restores it exactly, even if you've changed the selection or color set
 | Local removal (empty prompt) | Clean plates | Variation 1 is **LaMa** (fast, faithful); later variations run FLUX.1 Fill from the LaMa result at strength 0.8 for natural texture |
 | Stability AI | Masked inpainting; *Erase* for removal | Cloud, paid. 8-bit |
 | OpenAI GPT Image | Prompt following | Cloud, paid. Re-renders the crop; GenFill composites it back through the mask. 8-bit |
+| fal.ai | One key, many models: FLUX.1 Fill [pro] (default), Ideogram, GPT Image 2, Qwen, Bria, OneReward; reference edits | Cloud, paid. Empty prompt runs FLUX Erase. Mask inpainting at the crop's size. 8-bit |
+| Magnific | Pixel-preserving *Retouch* (default Retouch Auto) plus reference-edit models | Cloud, Magnific credits, sign-in. Empty prompt = erase. 8-bit |
+| Higgsfield | Reference edits (GPT Image 2.5 default, Nano Banana, Seedream, FLUX, Ideogram) | Cloud, Higgsfield credits, sign-in. Re-renders the crop; GenFill composites it back. Ignores the mask. Empty prompt = a "remove it" instruction. 8-bit |
+| Comfy Cloud | Mask inpainting (Flux Pro Fill default, Bria GenFill, Recraft) and partner edit models | Cloud, Comfy credits, API key or sign-in. Empty prompt = Flux Erase / Bria Eraser. 8-bit |
 | Offline Preview | Testing the pipeline | No AI; smears surrounding color into the selection |
+
+### Cloud models and the version menu
+
+The menu next to **Model** picks the model of the current cloud backend. *Default* (empty) uses
+the backend's default; you can also type any model id the provider accepts.
+
+- **Inpaint** models (and *erase* models for an empty prompt) change only the selection.
+- **Edit** models see only the crop and an instruction. They re-render the whole crop and
+  GenFill composites the result back through the expanded, feathered selection.
+
+| Backend | Default | Inpaint / erase | Edit |
+|---|---|---|---|
+| fal.ai | `fal-ai/flux-pro/v1/fill` | `fal-ai/flux-pro/v1/fill`, `fal-ai/flux-pro/v1/erase`, `fal-ai/ideogram/v3/edit`, `openai/gpt-image-2/edit`, `fal-ai/qwen-image-edit/inpaint`, `fal-ai/flux-lora-fill`, `fal-ai/onereward`, `fal-ai/bria/genfill`, `fal-ai/finegrain-eraser/mask` | `fal-ai/nano-banana-pro/edit`, `blackforestlabs/flux-3/edit-image`, `bytedance/seedream/v5/pro/edit` |
+| Magnific | `retouch-auto` | `retouch-auto`, `retouch-pro`, `retouch-classic`, `retouch-imagen-nano-banana-2-flash`, `retouch-imagen-nano-banana-2`, `retouch-inpaint-lab-nano-banana-2-flash`, `retouch-inpaint-lab-nano-banana-pro`, `retouch-inpaint-lab-seedream-5-pro`, `retouch-erase` | `seedream-5-pro`, `imagen-nano-banana-2-flash`, `imagen-nano-banana-2`, `imagen-nano-banana-2-lite`, `gpt-2`, `flux-kontext`, `flux-kontext-high`, `flux-2`, `seedream-4-5` |
+| Higgsfield | `gpt_image_2_5` | none (the server rejects masks) | `gpt_image_2_5`, `gpt_image_2`, `nano_banana_2_1`, `nano_banana_2`, `nano_banana_2_lite`, `nano_banana_pro`, `nano_banana`, `ideogram_4_5`, `seedream_v5_pro`, `seedream_5_0_flash`, `seedream_v5_lite`, `seedream_v4_5`, `flux_kontext`, `flux_2`, `flux_3_image` |
+| Comfy Cloud | `flux-pro-fill` | `flux-pro-fill`, `flux-erase`, `bria-genfill`, `bria-eraser`, `recraft-inpaint` | `flux-kontext-pro`, `flux-kontext-max`, `flux-2-pro`, `nano-banana-2`, `nano-banana-2-lite`, `nano-banana-pro`, `qwen-image-3` |
+
+Hover an entry in the menu for its note (cost, strengths). Magnific was verified end to end
+against the live service through GenFill's own code (browser sign-in, upload, Retouch erase,
+download). The other new backends are covered by unit tests with mocked services.
 
 ### How the local AI runs
 
@@ -426,16 +510,22 @@ The network is used only by the **installer**, and only to download uv (GitHub),
 (PyPI and the official PyTorch index) and model files (Hugging Face, GitHub). Nothing about your
 images or prompts is sent.
 
-**Cloud models (Stability AI, OpenAI) are different:** the crop around your selection (not the
-whole frame) and the prompt are uploaded to that company. Use them only when your client / TPN
-rules allow it.
+**Cloud models (Stability AI, OpenAI, fal.ai, Magnific, Higgsfield, Comfy Cloud) are
+different:** the crop around your selection (not the whole frame), its mask and the prompt are
+uploaded to that company. Use them only when your client / TPN rules allow it.
+
+- Magnific, Comfy Cloud and Higgsfield keep generations in your account, so the uploaded crop and
+  the results also appear in that provider's own library (and fal.ai stores uploads on its CDN).
+  Delete them there if needed.
+- Sign-in tokens never leave your machine except to their own provider. **Sign out** in the
+  *API Keys & Accounts* dialog deletes the stored tokens.
 
 | What | Where |
 |---|---|
-| Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved). If scripts live in OneDrive/Dropbox this syncs; set **cache folder** to keep it local |
+| Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved), or where `GENFILL_CACHE` points. If scripts live in OneDrive/Dropbox this syncs; set **cache folder** or `GENFILL_CACHE` to keep it local |
 | GenFill log (includes prompts) | `test_output\genfill.log` when installed from the repo, else `~\.nuke\genfill\genfill.log` |
 | Helper / installer logs | `%USERPROFILE%\GenFill-LocalAI\logs\` |
-| API keys (cloud only) | `~\.nuke\genfill\config.json`, never in .nk scripts |
+| API keys and sign-in tokens (cloud only) | `~\.nuke\genfill\config.json`, never in .nk scripts. Sign out removes the tokens |
 
 ---
 
@@ -450,6 +540,10 @@ rules allow it.
 | `WinError 1114` (c10.dll) | Run **Install / Repair** (restores the private C++ runtime next to PyTorch) |
 | `os error 1455` / paging file too small | Run **Install / Repair** (reshards T5); keep a few GB of free disk for the Windows page file |
 | Out of GPU memory | Close other GPU apps (Nuke's own GPU cache counts), or choose the Standard model size |
+| Sign-in doesn't finish | Port 47321-47328 on `127.0.0.1` must be free (a firewall or other program may hold it). Finish in the browser within 5 minutes, then Generate (or Sign in) again |
+| "Not signed in" | Use **Sign in** in *API Keys & Accounts*, or just click Generate and finish in the browser |
+| Credits / payment error from a cloud provider | Top up or check the plan on the provider's site; or switch to a cheaper model in the version menu |
+| Higgsfield ignores the mask / changes more than the selection | Higgsfield offers edit models only: they re-render the crop and GenFill blends back through the selection. Use Magnific, Comfy Cloud or fal.ai for true mask inpainting |
 | Fill looks washed out | You're probably on *Log (ACEScct)*; try *Display transform* |
 | Banding in bright fills | Use the local model (float); cloud models are 8-bit |
 | Bright highlights flatten inside the fill | Display transform ceiling; use *Log (ACEScct)* for that shot |
@@ -481,9 +575,11 @@ nuke/                       <- add this folder to NUKE_PATH (or use installers\i
     colorspace.py           encodings (ACEScct maths, OCIO display/input), Auto decisions
     region.py               selection bounds and context-crop maths (pure Python)
     pngio.py, state.py      dependency-free PNG IO, variation history (pure Python)
-    config.py, log.py       keys / cache defaults, logging
+    config.py, log.py       keys, cache and naming settings, logging
+    naming.py               cache folder and file name patterns (pure Python)
     devtools.py             Reload GenFill, in-Nuke smoke test
-    backends/               local.py, stability.py, openai_images.py, mock.py
+    backends/               local.py, stability.py, openai_images.py, fal.py, magnific.py,
+                            higgsfield.py, comfy_cloud.py (+ mcp.py, oauth.py, cloud.py), mock.py
     localai/                installer.py, client.py (Nuke side), worker.py (hidden helper)
     ui/                     Photoshop-style panel, Local AI dialog, API keys, Qt shim
 installers/                 install / dev install / uninstall / smoke test (Windows)

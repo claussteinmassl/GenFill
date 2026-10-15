@@ -20,3 +20,7 @@ desktop.ini
 test_output/
 nuke/python/genfill/build_info.json
 setup_git.bat
+.superpowers/
+
+# Claude Code session state
+.claude/scheduled_tasks.lock
