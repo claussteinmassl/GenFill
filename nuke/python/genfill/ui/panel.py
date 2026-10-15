@@ -84,7 +84,19 @@ class NukeController(object):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
                 n["gf_model"].value(), self.quality(), self.resolution(), self.variations(),
-                tuple(sorted(self._engine.status(n).items())))
+                self.source_format(), tuple(sorted(self._engine.status(n).items())))
+
+    def source_format(self):
+        """``(name, width, height)`` of the plate on the Source input, or None.
+
+        Part of :meth:`signature`, so the size and cost lines follow a newly connected or
+        reformatted plate.
+        """
+        src = self.node.input(0)
+        if src is None:
+            return None
+        fmt = src.format()
+        return (src.name(), fmt.width(), fmt.height())
 
     def variations(self):
         knobs = self.node.knobs()
@@ -122,8 +134,13 @@ class NukeController(object):
         plan = self._engine.size_plan(self.node)
         return plan.text() if plan is not None else ""
 
-    def cost_snapshot(self):
-        """Plain settings for :mod:`pricing` (main thread), or None without a plate."""
+    def cost_snapshot(self, prompt=None):
+        """Plain settings for :mod:`pricing` (main thread), or None without a plate.
+
+        Args:
+            prompt: The prompt as typed in the panel; defaults to the saved knob. Only
+                whether it is empty matters (an empty prompt runs the erase model).
+        """
         from .. import config, pricing
         b = self._gfnode.backend_for(self.node)
         plan = self._engine.size_plan(self.node, b)
@@ -132,7 +149,8 @@ class NukeController(object):
         return pricing.snapshot(b, self.model_version(), self.quality(),
                                 self._engine.resolution(self.node),
                                 max(1, min(10, self.variations())), plan.width, plan.height,
-                                self.prompt(), config.get_api_key(b.id, b.env_var))
+                                self.prompt() if prompt is None else prompt,
+                                config.get_api_key(b.id, b.env_var))
 
     def cost_auth(self):
         """``pricing.auth_state`` of the current backend (key set, signed in)."""
@@ -428,6 +446,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self._cost_due = None       # time.time() when the debounced fetch starts
         self._was_running = False
         self._auth_checked = 0.0
+        self._prompt_filled = None  # last seen "prompt is not empty" of the prompt field
         self.setObjectName("GenFillPanel")
         self.setStyleSheet(style.STYLESHEET)
         self._build()
@@ -542,6 +561,7 @@ class GenFillPanel(QtWidgets.QWidget):
                                "the surroundings.\nCtrl+Enter = Generate, Enter = new line")
         self.prompt.submitted.connect(self._on_generate)
         self.prompt.committed.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
+        self.prompt.textChanged.connect(self._on_prompt_edited)
         self.generate_btn = QtWidgets.QPushButton("Generate")
         self.generate_btn.setObjectName("gfGenerate")
         self.generate_btn.setIcon(QtGui.QIcon(sparkle_pixmap(14, "#ffffff")))
@@ -924,12 +944,20 @@ class GenFillPanel(QtWidgets.QWidget):
         self._cost_settings()
 
     # cost -------------------------------------------------------------------
+    @_safe
+    def _on_prompt_edited(self):
+        """Typing into an empty prompt (or clearing it) switches erase/inpaint pricing."""
+        filled = bool(self.prompt.text().strip())
+        if filled != self._prompt_filled:
+            self._prompt_filled = filled
+            self._cost_settings()
+
     def _cost_settings(self):
         """Settings changed: take a new snapshot; a new price key is fetched debounced."""
         if not hasattr(self.ctl, "cost_snapshot"):
             return
         try:
-            snap = self.ctl.cost_snapshot()
+            snap = self.ctl.cost_snapshot(self.prompt.text())
         except Exception as exc:   # never break the panel over a cost estimate
             snap = None
             self._log_cost_error(exc)
