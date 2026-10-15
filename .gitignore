@@ -20,3 +20,4 @@ desktop.ini
 test_output/
 nuke/python/genfill/build_info.json
 setup_git.bat
+.superpowers/
