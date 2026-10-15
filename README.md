@@ -91,7 +91,7 @@ The model size is picked from your VRAM and can be changed in the dialog:
 
 ### 3. Cloud keys and accounts (optional)
 
-Open **GenFill > API Keys & Accounts...** (menu entry: *API Keys...*).
+Open **GenFill > API Keys & Accounts...** (also on the node: *API Keys & Accounts...*).
 
 | Provider | How to connect |
 |---|---|

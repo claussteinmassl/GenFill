@@ -45,7 +45,7 @@ class OpenAIBackend(Backend):
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         if not api_key:
-            raise BackendError("No OpenAI API key set (OPENAI_API_KEY or API Keys...).")
+            raise BackendError("No OpenAI API key set (OPENAI_API_KEY or API Keys & Accounts...).")
         if cancelled and cancelled():
             raise Cancelled("Cancelled")
         model = self._model(request.model)

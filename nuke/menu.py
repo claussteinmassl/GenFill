@@ -8,7 +8,9 @@ if nuke.GUI:
     _menu.addCommand("Generative Fill", "import genfill.node; genfill.node.create()",
                      icon="GenFill.png")
     _menu.addSeparator()
-    _menu.addCommand("API Keys...", "import genfill.ui.settings; genfill.ui.settings.show()")
+    # "&&" is a literal "&" (Nuke menus are Qt menus, where a single "&" marks a mnemonic).
+    _menu.addCommand("API Keys && Accounts...",
+                     "import genfill.ui.settings; genfill.ui.settings.show()")
     _local = _menu.addMenu("Local AI")
     _local.addCommand("Install / Repair...", "import genfill.ui.localai_dialog as d; d.show()")
     _local.addCommand("Stop AI Helper (free GPU memory)",
@@ -23,7 +25,8 @@ if nuke.GUI:
     _top.addCommand("Local AI: Install / Repair...", "import genfill.ui.localai_dialog as d; d.show()")
     _top.addCommand("Local AI: Stop AI Helper (free GPU memory)",
                     "import genfill.localai.client as c; c.stop_helper()")
-    _top.addCommand("API Keys...", "import genfill.ui.settings; genfill.ui.settings.show()")
+    _top.addCommand("API Keys && Accounts...",
+                    "import genfill.ui.settings; genfill.ui.settings.show()")
     _top.addSeparator()
     _top.addCommand("Developer/Run Smoke Test", "import genfill.devtools; genfill.devtools.run_smoke_test()")
     _top.addCommand("Developer/Reload GenFill", "import genfill.devtools; genfill.devtools.reload_genfill()")

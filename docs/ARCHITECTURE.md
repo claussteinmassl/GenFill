@@ -119,7 +119,7 @@ engine.generate ──▶ Backend.generate(request, api_key, progress, cancelled
 - **`McpBackend` / `cloud.py`**: shared plumbing for these backends: the client factory, one
   `OAuthProvider` per backend, `ref_prompt` (the instruction for edit models, which never see
   the mask), `put_bytes` (presigned PUT), `poll` (cancellable). Sign-in happens inside the
-  generation thread, so Nuke's UI never blocks; the panel shows "Waiting for sign-in...".
+  generation thread, so Nuke's UI never blocks; the panel shows "Sign in to <provider> in your browser...".
 - **Results** are named `.png` or `.jpg` by their content. Models answer at their own size;
   the node's Reformat resamples the result to the crop.
 
