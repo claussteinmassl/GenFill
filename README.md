@@ -78,7 +78,7 @@ yourself (desktop app, portable build or a RunPod template), start it, then open
 |---|---|
 | URL | Default `http://127.0.0.1:8188` (ComfyUI on this machine). Another machine on your network: `http://192.168.1.20:8188`. RunPod: `https://<pod-id>-8188.proxy.runpod.net`. Set by `GENFILL_COMFY_URL`, or `comfyui.url` in the config file |
 | Token | Optional. Sent as `Authorization: Bearer <token>` for servers behind a reverse proxy. `GENFILL_COMFY_TOKEN` |
-| Workflow folders | The bundled folder first, then `comfyui.workflow_dirs` from the config file, then the folders in `GENFILL_COMFY_WORKFLOWS` (a list separated by `;` on Windows, `:` elsewhere). Later folders override earlier ones with the same workflow id, so a studio can replace a shipped workflow |
+| Workflow folders | Shown read-only in the dialog; set them with `GENFILL_COMFY_WORKFLOWS` or `comfyui.workflow_dirs` in `config.json`. The bundled folder comes first, then `comfyui.workflow_dirs`, then the folders in `GENFILL_COMFY_WORKFLOWS` (a list separated by `;` on Windows, `:` elsewhere). Later folders override earlier ones with the same workflow id, so a studio can replace a shipped workflow |
 
 The dialog has a **Test connection** button. Pick **ComfyUI** in the Model menu on the node; the
 version menu lists every usable workflow, and a workflow that cannot load shows as "Not usable"
@@ -496,10 +496,9 @@ GenFill 0.9 removed the float TIFF path of the old built-in local model: the cro
 model and the result comes back as an 8-bit PNG, locally or in the cloud. The colour pipeline
 (encode, generate, decode) is unchanged. To keep banding down:
 
-- Prefer **Display transform** or a display-referred plate for bright areas, and check skies
-  and soft gradients after decoding.
+- For highlight-heavy fills use **Log (ACEScct)**: the display transform's inverse is steeper
+  near white, so 8-bit steps hurt more there. Check skies and soft gradients after decoding.
 - Regrain or add a little noise over the fill: grain hides the 8-bit steps.
-- Check bright fills against the plate (an Exposure node down a few stops is a quick test).
 
 ### What this does and doesn't give you
 
