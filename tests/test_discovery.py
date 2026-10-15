@@ -169,9 +169,59 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(qwen.extra["negative_field"], "negative_prompt")
         self.assertTrue(qwen.extra["output_format"])
         self.assertTrue(qwen.label.endswith("(reference edit)"))
-        luma = specs["luma/agent/uni-1/v1/edit"]
-        self.assertEqual((luma.extra["image_field"], luma.max_count), ("image_url", 1))
-        self.assertNotIn("mask_as_image", luma.extra)
+        # Luma picks its own size and offers no size or aspect input: a stretched paid
+        # result, so it is not offered.
+        self.assertIsNone(specs["luma/agent/uni-1/v1/edit"])
+
+    def test_fal_size_mapping(self):
+        specs = dict((m["endpoint_id"], fal.spec_from_openapi(m))
+                     for m in fixture("fal_models_expanded.json")["models"])
+        for eid in ("alibaba/qwen-image-3/edit", "fal-ai/flux-2/klein/9b/edit",
+                    "fal-ai/flux-general/inpainting"):
+            self.assertEqual(specs[eid].extra["size"], "obj", eid)   # {width, height}
+        mai = specs["microsoft/mai-image-2.5/edit"].extra
+        self.assertEqual(mai["aspect_field"], "aspect_ratio")
+        self.assertNotIn("auto", mai["aspect_ratios"])
+        muse = specs["meta/muse-image/edit"].extra
+        self.assertEqual(muse["aspect_field"], "aspect_ratio")
+        self.assertNotIn("aspect_ratios", muse)                       # free "w:h" text
+        # mask models: "auto" keeps the source geometry; custom sizes can clash with a mask
+        for eid in ("ideogram/v4.5/edit", "fal-ai/z-image/turbo/inpaint"):
+            self.assertEqual(specs[eid].extra["fixed"], {"image_size": "auto"}, eid)
+            self.assertNotIn("size", specs[eid].extra)
+        self.assertNotIn("size", specs["fal-ai/bria/genfill"].extra)  # returns input size
+
+    def test_fal_size_payloads(self):
+        specs = dict((m["endpoint_id"], fal.spec_from_openapi(m))
+                     for m in fixture("fal_models_expanded.json")["models"])
+        req = GenerationRequest("i", "m", "m", "door", 1600, 900, model="x")
+        urls = {"image": "https://i", "mask": "https://m"}
+
+        def body(eid):
+            return fal.build_payload(specs[eid], req, "door", urls, 1, 1)
+        self.assertEqual(body("meta/muse-image/edit")["aspect_ratio"], "16:9")
+        self.assertEqual(body("microsoft/mai-image-2.5/edit")["aspect_ratio"], "16:9")
+        req.width, req.height = 1000, 1100
+        self.assertEqual(body("meta/muse-image/edit")["aspect_ratio"], "10:11")
+        self.assertEqual(body("microsoft/mai-image-2.5/edit")["aspect_ratio"], "1:1")
+        self.assertEqual(body("alibaba/qwen-image-3/edit")["image_size"],
+                         {"width": 1000, "height": 1100})
+        self.assertEqual(body("ideogram/v4.5/edit")["image_size"], "auto")
+        spec = base.ModelSpec("x/wh", "WH", kind="edit", image_field="image_url", size="wh")
+        b = fal.build_payload(spec, req, "door", urls, 1, 1)
+        self.assertEqual((b["width"], b["height"]), (1000, 1100))
+        self.assertIsNone(fal._size_extra({"prompt": {}}, {}, masked=False))
+
+    def test_fal_mask_polarity(self):
+        inv = lambda d: fal._mask_inverted({"description": d})
+        self.assertTrue(inv("Mask matching the source dimensions. Black edits, white preserves."))
+        self.assertTrue(inv("White areas are preserved, black areas are filled."))
+        self.assertTrue(inv("white areas are preserved and black areas are inpainted"))
+        self.assertTrue(inv("Black areas will be edited."))
+        self.assertFalse(inv("White pixels (255) indicate areas to remove."))
+        self.assertFalse(inv("White pixels will be inpainted, black preserved."))
+        self.assertFalse(inv("The mask to area to Inpaint in."))
+        self.assertFalse(inv(""))
 
     def test_fal_candidates(self):
         listed = dict((m["endpoint_id"], fal._candidate(m))
@@ -231,9 +281,33 @@ class CacheTests(CacheMixin, unittest.TestCase):
         self.assertEqual(b.model_spec("typed-id").label, "typed-id")   # ad-hoc still works
 
     def test_duplicate_labels_get_the_id(self):
-        merged = discovery.merge([base.ModelSpec("a", "Wan")],
-                                 [base.ModelSpec("b", "Wan"), base.ModelSpec("c", "Wan")])
+        found = [base.ModelSpec("b", "Wan"), base.ModelSpec("c", "Wan")]
+        merged = discovery.merge([base.ModelSpec("a", "Wan")], found)
         self.assertEqual([m.label for m in merged], ["Wan", "Wan (b)", "Wan (c)"])
+        self.assertEqual([m.label for m in found], ["Wan", "Wan"])   # shared specs untouched
+        merged = discovery.merge([base.ModelSpec("a", "Wan")], found)
+        self.assertEqual([m.label for m in merged], ["Wan", "Wan (b)", "Wan (c)"])
+
+    def test_empty_result_keeps_cache_and_timestamp(self):
+        discovery.store("fakeprov", [base.ModelSpec("old", "Old")], now=1000.0)
+        with mock.patch("genfill.log.warning") as warn:
+            self.assertIsNone(discovery.refresh(FakeBackend([]), force=True))
+        warn.assert_called()
+        discovery.reset()   # also on disk
+        self.assertEqual([m.id for m in discovery.cached("fakeprov")], ["old"])
+        self.assertEqual(discovery.fetched_at("fakeprov"), 1000.0)   # still stale
+
+    def test_empty_result_is_retried_after_an_hour(self):
+        b = FakeBackend([])
+        now = time.time()
+        with mock.patch("genfill.log.warning"):
+            self.assertTrue(discovery.maybe_start(b, now=now))
+            discovery.wait(b.id, 5)
+            self.assertIn("no usable models", discovery.state(b.id)["message"])
+            self.assertFalse(discovery.maybe_start(b, now=now + 600))
+            self.assertTrue(discovery.maybe_start(b, now=now + discovery.RETRY_SECONDS + 1))
+            discovery.wait(b.id, 5)
+        self.assertEqual(len(b.calls), 2)
 
     def test_not_discoverable_ignores_cache(self):
         b = FakeBackend()
@@ -280,8 +354,8 @@ class CacheTests(CacheMixin, unittest.TestCase):
         now = time.time()
         self.assertTrue(discovery.maybe_start(b, now=now))
         discovery.wait(b.id, 5)
-        self.assertFalse(discovery.maybe_start(b, now=now + 60))   # failed: not again today
-        self.assertTrue(discovery.maybe_start(b, now=now + 25 * 3600))
+        self.assertFalse(discovery.maybe_start(b, now=now + 60))   # failed: not right away
+        self.assertTrue(discovery.maybe_start(b, now=now + 2 * 3600))
         discovery.wait(b.id, 5)
         fresh = FakeBackend([])
         fresh.id = "freshprov"
@@ -468,8 +542,8 @@ class GenerateDiscoveredTests(CacheMixin, unittest.TestCase):
 
     def test_fal_discovered_inpaint_and_edit(self):
         b = fal.FalBackend()
-        discovery.store(b.id, [fal.spec_from_openapi(m)
-                               for m in fixture("fal_models_expanded.json")["models"]])
+        specs = [fal.spec_from_openapi(m) for m in fixture("fal_models_expanded.json")["models"]]
+        discovery.store(b.id, [s for s in specs if s is not None])
         fake = test_fal.FakeFal()
         req = GenerationRequest(self.img, self.msk, self.msk, "a red door", 8, 6, seed=9,
                                 count=2, model="fal-ai/z-image/turbo/inpaint")
@@ -489,6 +563,7 @@ class GenerateDiscoveredTests(CacheMixin, unittest.TestCase):
             b.generate(req, "id:secret")
         body = fake.jbody(fake.find("POST", fal.QUEUE_ROOT + "/alibaba/qwen-image-3/edit")[0])
         self.assertEqual(len(body["image_urls"]), 2)          # plate + mask as second image
+        self.assertEqual(body["image_size"], {"width": 8, "height": 6})
         self.assertTrue(body["prompt"].startswith(fal.MASK_NOTE))
 
 

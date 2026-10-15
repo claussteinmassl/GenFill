@@ -18,6 +18,7 @@ curated) list and is only logged. The file holds model metadata only, never keys
 from __future__ import annotations
 
 import calendar
+import copy
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import time
 from .base import ModelSpec
 
 TTL_SECONDS = 24 * 3600
+RETRY_SECONDS = 3600   # automatic retry after a failed or empty fetch
 CACHE_NAME = "models_cache.json"
 
 _lock = threading.RLock()
@@ -189,6 +191,7 @@ def merge(curated, discovered):
     for m in discovered:
         if m.id not in seen:
             if m.label in labels:
+                m = copy.copy(m)   # cached specs are shared: relabel a copy
                 m.label = "%s (%s)" % (m.label, m.id)
             seen.add(m.id)
             labels.add(m.label)
@@ -203,7 +206,8 @@ def merge(curated, discovered):
 def refresh(backend, api_key="", force=False):
     """Fetch ``backend``'s live list and cache it, unless the cache is fresh (``force``).
 
-    Never raises: not signed in, offline or a provider error keeps the cache and is logged.
+    Never raises: not signed in, offline, a provider error or an empty result keeps the
+    previous cache entry (and its timestamp, so it is retried) and is logged.
 
     Returns:
         The number of discovered models that are not curated, or ``None`` if nothing was
@@ -218,6 +222,13 @@ def refresh(backend, api_key="", force=False):
     except Exception as exc:   # discovery is best effort; never disturb the artist
         _set_status(backend.id, False, _short(exc))
         _log("info", "Model discovery for %s skipped: %s", backend.id, exc)
+        return None
+    if not specs:
+        # A provider-side format change parses to nothing: never wipe a good list with it.
+        _set_status(backend.id, False, "the provider returned no usable models; "
+                    "kept the previous list")
+        _log("warning", "Model discovery for %s returned no models; keeping the cache",
+             backend.id)
         return None
     curated = set(m.id for m in backend.catalogue)
     new = len([s for s in specs if s.id not in curated])
@@ -259,7 +270,8 @@ def start(backend, api_key="", force=True):
 
 
 def maybe_start(backend, api_key="", now=None):
-    """Automatic discovery: at most once per TTL per backend, only when the cache is stale."""
+    """Automatic discovery when the cache is stale; after a failed or empty attempt the next
+    automatic one waits ``RETRY_SECONDS``."""
     if not getattr(backend, "discoverable", False):
         return False
     now = time.time() if now is None else now
@@ -267,7 +279,7 @@ def maybe_start(backend, api_key="", now=None):
         if is_fresh(backend.id, now=now):
             return False
         last = _attempted.get(backend.id)
-        if last is not None and now - last < TTL_SECONDS:
+        if last is not None and now - last < RETRY_SECONDS:
             return False
         _attempted[backend.id] = now
     return start(backend, api_key, force=False)

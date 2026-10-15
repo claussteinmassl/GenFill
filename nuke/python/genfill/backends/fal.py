@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import random
 import re
 import time
@@ -56,7 +57,10 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 #   negative_field (None)       field for the negative prompt
 #   count_field (None)          "num_images"; None = one image per request (N requests)
 #   seed_field (None), seed_max (None)
-#   size (None)                 "obj": image_size {"width", "height"} from the request
+#   size (None)                 "obj": image_size {"width", "height"} from the request;
+#                               "wh": top-level width/height
+#   aspect_field (None)         field fed with the crop's aspect ratio ("w:h"), snapped to
+#   aspect_ratios (None)        ... the nearest of these when the model has an enum
 #   output_format (True)        send output_format "png"
 #   quality_field (None)        field fed from the Quality setting (low/medium/high)
 #   budget / multiple           pixel budget and grid for model_size
@@ -388,14 +392,97 @@ def _enum(prop):
     return [str(v) for v in values]
 
 
-_BLACK_EDITS = re.compile(r"\bblack\b[^.]*\b(edit|inpaint|fill|replac|chang|regenerat)")
-_WHITE_EDITS = re.compile(r"\bwhite\b[^.]*\b(edit|inpaint|fill|replac|chang|regenerat|remov)")
+def _near(colour, verbs):
+    """``colour`` followed by one of ``verbs`` within five words of the same clause."""
+    return re.compile(r"\b%s\b(?:[ \t]+[\w()]+){0,5}?[ \t]+(?:%s)" % (colour, verbs))
+
+
+_CHANGE = r"edit|inpaint|fill|replac|chang|regenerat|remov|repaint"
+_KEEP = r"preserv|kept|keep|unchanged|untouched|protect"
+_BLACK_EDITS, _WHITE_EDITS = _near("black", _CHANGE), _near("white", _CHANGE)
+_BLACK_KEEPS, _WHITE_KEEPS = _near("black", _KEEP), _near("white", _KEEP)
 
 
 def _mask_inverted(prop):
-    """True if the schema says black marks the area to change (GenFill: white = fill)."""
+    """True if the schema says black marks the area to change (GenFill: white = fill).
+
+    "Black edits, white preserves" and "white areas are preserved, black areas are filled"
+    are inverted; anything that says white changes or black is kept, or says nothing, is not.
+    """
     text = str((prop or {}).get("description") or "").lower()
-    return bool(_BLACK_EDITS.search(text)) and not _WHITE_EDITS.search(text)
+    inverted = _BLACK_EDITS.search(text) or _WHITE_KEEPS.search(text)
+    normal = _WHITE_EDITS.search(text) or _BLACK_KEEPS.search(text)
+    return bool(inverted) and not normal
+
+
+def _accepts_size_object(prop, schemas):
+    """True if a property (e.g. ``image_size``) takes ``{"width", "height"}``."""
+    if not isinstance(prop, dict):
+        return False
+    for sub in [prop] + list(prop.get("anyOf") or []) + list(prop.get("oneOf") or []):
+        if not isinstance(sub, dict):
+            continue
+        if sub.get("$ref"):
+            name = sub["$ref"].split("/")[-1]
+            if name not in schemas and name.endswith("ImageSize"):
+                return True   # fal's shared {width, height} schema, not included
+            sub = schemas.get(name) or {}
+        props = sub.get("properties") or {}
+        if "width" in props and "height" in props:
+            return True
+    return False
+
+
+def _size_extra(props, schemas, masked):
+    """Extra keys that make the model answer in the crop's aspect, or ``None`` if it can't.
+
+    Mask models return the input geometry by themselves; they only get ``image_size: auto``
+    when the schema offers it (custom sizes can conflict with a mask, e.g. Ideogram 4.5) or
+    else the exact size. Reference edits need an exact size (``image_size`` object, or
+    ``width``/``height``) or an aspect ratio (free ``"w:h"`` text or the nearest enum value).
+    """
+    size = props.get("image_size")
+    if masked:
+        if "auto" in _enum(size):
+            return {"fixed": {"image_size": "auto"}}
+        return {"size": "obj"} if _accepts_size_object(size, schemas) else {}
+    if _accepts_size_object(size, schemas):
+        return {"size": "obj"}
+    if "width" in props and "height" in props:
+        return {"size": "wh"}
+    aspect = props.get("aspect_ratio")
+    if isinstance(aspect, dict):
+        ratios = _ratios(_enum(aspect))
+        if ratios:
+            return {"aspect_field": "aspect_ratio", "aspect_ratios": ratios}
+        subs = [aspect] + [a for a in aspect.get("anyOf") or [] if isinstance(a, dict)]
+        free = any(a.get("type", "string") == "string" and not a.get("enum")
+                   and not a.get("anyOf") for a in subs)
+        if free:
+            return {"aspect_field": "aspect_ratio"}   # free "w:h" text
+    return None
+
+
+def _ratios(values):
+    out = []
+    for v in values:
+        parts = v.split(":")
+        try:
+            if len(parts) == 2 and float(parts[0]) > 0 and float(parts[1]) > 0:
+                out.append(v)
+        except ValueError:
+            pass
+    return out
+
+
+def aspect_value(spec, width, height):
+    """The ``aspect_ratio`` to send: nearest enum value, or the crop's own reduced ratio."""
+    ratios = spec.extra.get("aspect_ratios")
+    if ratios:
+        return region.closest_size(width, height, region.aspect_sizes(ratios, 1024 * 1024))[2]
+    w, h = int(width), int(height)
+    g = math.gcd(w, h) or 1
+    return "%d:%d" % (w // g, h // g)
 
 
 def spec_from_openapi(model):
@@ -407,6 +494,7 @@ def spec_from_openapi(model):
     """
     eid = str(model.get("endpoint_id") or "")
     props, required = _input_schema(model.get("openapi"))
+    schemas = ((model.get("openapi") or {}).get("components") or {}).get("schemas") or {}
     if not eid or not props or any(r not in _FILLED for r in required):
         return None
     if "image_url" in props:
@@ -453,6 +541,13 @@ def spec_from_openapi(model):
     qualities = _enum(props.get("quality"))
     if all(q in qualities for q in ("low", "medium", "high")):
         extra["quality_field"] = "quality"
+    sizing = _size_extra(props, schemas, bool(mask_field))
+    if sizing is None:
+        return None   # the model picks its own size: a stretched, paid result
+    fixed = dict(extra.get("fixed") or {}, **sizing.pop("fixed", {}))
+    if fixed:
+        extra["fixed"] = fixed
+    extra.update(sizing)
     note = str(meta.get("description") or "").strip()
     return ModelSpec(eid, label, kind=kind, max_count=max_count, note=note[:160], **extra)
 
@@ -533,6 +628,10 @@ def build_payload(spec, request, prompt, urls, n, seed):
         body[x["seed_field"]] = seed
     if x.get("size") == "obj":
         body["image_size"] = {"width": request.width, "height": request.height}
+    elif x.get("size") == "wh":
+        body["width"], body["height"] = request.width, request.height
+    if x.get("aspect_field"):
+        body[x["aspect_field"]] = aspect_value(spec, request.width, request.height)
     if x.get("output_format", True):
         body["output_format"] = "png"
     body.update(x.get("fixed", {}))
