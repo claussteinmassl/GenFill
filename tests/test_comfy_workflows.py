@@ -76,6 +76,20 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(lib["good"].timeout, 60.0)
         self.assertIn("slow", cw.library([self.tmp]))
 
+    def test_infinite_and_nan_sidecar_values_are_listed_with_an_error(self):
+        # Raw JSON text: 1e400 parses to infinity; NaN and Infinity are non-finite literals.
+        for wid, text in (("huge", '{"pixels": 1e400}'), ("nan", '{"timeout": NaN}'),
+                          ("inf", '{"timeout": Infinity}')):
+            with open(os.path.join(self.tmp, wid + ".json"), "w") as fh:
+                json.dump(GRAPH, fh)
+            with open(os.path.join(self.tmp, wid + ".genfill.json"), "w") as fh:
+                fh.write(text)
+        lib = cw.load_dir(self.tmp)
+        self.assertIn("pixels", lib["huge"].error)
+        self.assertIn("timeout", lib["nan"].error)
+        self.assertIn("timeout", lib["inf"].error)
+        self.assertIn("huge", cw.library([self.tmp]))
+
     def test_later_folders_override(self):
         other = tempfile.mkdtemp()
         try:

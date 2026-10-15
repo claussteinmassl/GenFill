@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 
 from .base import ModelSpec
@@ -140,9 +141,11 @@ def _numeric_error(meta):
     for key, cast in NUMERIC_META.items():
         if key in meta:
             try:
+                if not math.isfinite(float(meta[key])):
+                    raise ValueError("not finite")
                 cast(meta[key])
-            except (TypeError, ValueError):
-                return "sidecar %s is not a number: %r" % (key, meta[key])
+            except (TypeError, ValueError, OverflowError):
+                return "sidecar %s is not a finite number: %r" % (key, meta[key])
     return ""
 
 
