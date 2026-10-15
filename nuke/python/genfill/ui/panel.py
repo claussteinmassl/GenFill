@@ -308,13 +308,6 @@ class GenFillPanel(QtWidgets.QWidget):
         self.version.lineEdit().editingFinished.connect(self._on_version_typed)
         self._version_backend = None
         head.addWidget(self.version)
-        self.local_btn = QtWidgets.QToolButton()
-        self.local_btn.setObjectName("gfIcon")
-        self.local_btn.setText(u"\u2699 Local AI...")
-        self.local_btn.setToolTip("Install, repair or check the free local AI "
-                                  "(also in GenFill > Local AI)")
-        self.local_btn.clicked.connect(self._on_local_ai)
-        head.addWidget(self.local_btn)
         root.addLayout(head)
 
         # Contextual task bar
@@ -428,11 +421,6 @@ class GenFillPanel(QtWidgets.QWidget):
         self.setMinimumWidth(3 * (THUMB_W + 12))
 
     # events -----------------------------------------------------------------
-    @_safe
-    def _on_local_ai(self, *args):
-        from . import localai_dialog
-        localai_dialog.show()
-
     @_safe
     def _on_model(self, label):
         if label and label != self.ctl.backend_label():
@@ -571,7 +559,6 @@ class GenFillPanel(QtWidgets.QWidget):
             self.model.blockSignals(False)
         self.model.setToolTip(self.ctl.backend_description())
         self._fill_version()
-        self.local_btn.setVisible(label.startswith("Local"))
 
         # prompt (don't fight the user while typing)
         if not self.prompt.hasFocus() and self.prompt.text() != self.ctl.prompt():

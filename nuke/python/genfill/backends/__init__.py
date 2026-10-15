@@ -10,13 +10,12 @@ from .comfy_cloud import ComfyCloudBackend
 from .comfyui import ComfyUIBackend
 from .fal import FalBackend
 from .higgsfield import HiggsfieldBackend
-from .local import LocalBackend
 from .magnific import MagnificBackend
 from .mock import MockBackend
 from .openai_images import OpenAIBackend
 from .stability import StabilityBackend
 
-_BACKENDS = [ComfyUIBackend(), LocalBackend(), StabilityBackend(), OpenAIBackend(), FalBackend(), MagnificBackend(),
+_BACKENDS = [ComfyUIBackend(), StabilityBackend(), OpenAIBackend(), FalBackend(), MagnificBackend(),
              HiggsfieldBackend(), ComfyCloudBackend(), MockBackend()]
 
 __all__ = ["Backend", "BackendError", "Cancelled", "GenerationRequest", "all_backends", "get",

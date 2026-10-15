@@ -5,11 +5,13 @@ Keys go to ~/.nuke/genfill/config.json, never into the script. Browser sign-ins
 """
 from __future__ import annotations
 
+import os
 import threading
 
 from .qt import QtCore, QtWidgets, exec_
 from . import style
 from .. import backends, config
+from ..backends import comfyui
 
 POLL_MS = 200
 
@@ -41,6 +43,36 @@ class _SignIn(object):
         self.done = True
 
 
+class _ComfyTest(object):
+    """One ComfyUI connection test running in a worker thread.
+
+    Like :class:`_SignIn`, the thread only fills plain attributes; the dialog's
+    timer reads them on the Qt thread.
+    """
+
+    def __init__(self, url, token):
+        self.url = url
+        self.token = token
+        self.done = False
+        self.error = ""
+        self.text = ""
+        self.thread = threading.Thread(target=self._run, name="genfill-comfy-test")
+        self.thread.daemon = True
+
+    def start(self):
+        self.thread.start()
+
+    def _run(self):
+        try:
+            info = comfyui.server_info(self.url, self.token)
+            devices = ", ".join(d for d in info["devices"] if d)
+            self.text = "ComfyUI %s%s" % (info["version"] or "(unknown version)",
+                                          " on %s" % devices if devices else "")
+        except Exception as exc:  # BackendError / anything unexpected
+            self.error = str(exc) or exc.__class__.__name__
+        self.done = True
+
+
 class KeysDialog(QtWidgets.QDialog):
     def __init__(self, focus=None, parent=None):
         super(KeysDialog, self).__init__(parent)
@@ -55,8 +87,9 @@ class KeysDialog(QtWidgets.QDialog):
         intro.setObjectName("gfMuted")
         lay.addWidget(intro)
 
+        self._comfy_job = None
         self.fields = {}
-        first = None
+        first = self._build_comfy(lay)
         key_list = backends.key_backends()
         if key_list:
             box = QtWidgets.QGroupBox("API keys")
@@ -77,9 +110,9 @@ class KeysDialog(QtWidgets.QDialog):
                 if b.id == focus or first is None:
                     first = field
             lay.addWidget(box)
-            show = QtWidgets.QCheckBox("Show keys")
-            show.toggled.connect(self._toggle)
-            lay.addWidget(show)
+        show = QtWidgets.QCheckBox("Show keys")
+        show.toggled.connect(self._toggle)
+        lay.addWidget(show)
 
         self.accounts = {}   # backend id -> dict(status, sign_in, sign_out, job)
         account_list = backends.account_backends()
@@ -103,9 +136,9 @@ class KeysDialog(QtWidgets.QDialog):
                 self.accounts[b.id] = acc
                 self._refresh_account(b.id)
             lay.addWidget(box)
-            self._timer = QtCore.QTimer(self)
-            self._timer.timeout.connect(self._poll)
-            self._timer.start(POLL_MS)
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._poll)
+        self._timer.start(POLL_MS)
 
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save
                                           | QtWidgets.QDialogButtonBox.Cancel)
@@ -117,8 +150,70 @@ class KeysDialog(QtWidgets.QDialog):
 
     def _toggle(self, on):
         mode = QtWidgets.QLineEdit.Normal if on else QtWidgets.QLineEdit.Password
-        for f in self.fields.values():
+        for f in list(self.fields.values()) + [self.comfy_token]:
             f.setEchoMode(mode)
+
+    # ComfyUI --------------------------------------------------------------
+    def _build_comfy(self, lay):
+        """Add the ComfyUI group; returns the URL field (the default focus)."""
+        stored = config.load().get("comfyui") or {}
+        env_url = os.environ.get("GENFILL_COMFY_URL", "").strip()
+        box = QtWidgets.QGroupBox("ComfyUI")
+        form = QtWidgets.QFormLayout(box)
+        self.comfy_url = QtWidgets.QLineEdit()
+        if env_url:
+            self.comfy_url.setText(env_url)
+            self.comfy_url.setReadOnly(True)
+            hint = "Set by GENFILL_COMFY_URL (unset it to edit here)"
+        else:
+            self.comfy_url.setText(str(stored.get("url") or ""))
+            hint = "Using %s" % (
+                "config" if stored.get("url") else "default")
+        self.comfy_url.setPlaceholderText("%s (%s)" % (config.comfyui_url(), hint))
+        self.comfy_url.setToolTip("%s\nEnvironment variable: GENFILL_COMFY_URL" % hint)
+        form.addRow("Server URL", self.comfy_url)
+        self.comfy_token = QtWidgets.QLineEdit()
+        self.comfy_token.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.comfy_token.setText(config.load().get("api_keys", {}).get("comfyui", ""))
+        src = config.key_source("comfyui", "GENFILL_COMFY_TOKEN")
+        token_hint = "Using %s" % src if src else "Not set (only needed for a protected server)"
+        self.comfy_token.setPlaceholderText(token_hint)
+        self.comfy_token.setToolTip("%s\nEnvironment variable: GENFILL_COMFY_TOKEN" % token_hint)
+        form.addRow("Access token", self.comfy_token)
+        row = QtWidgets.QHBoxLayout()
+        self.comfy_test = QtWidgets.QPushButton("Test connection")
+        self.comfy_test.clicked.connect(self._on_comfy_test)
+        self.comfy_status = QtWidgets.QLabel("")
+        self.comfy_status.setWordWrap(True)
+        self.comfy_status.setObjectName("gfMuted")
+        row.addWidget(self.comfy_test)
+        row.addWidget(self.comfy_status, 1)
+        form.addRow(row)
+        folders = QtWidgets.QLabel("\n".join(config.comfyui_workflow_dirs()))
+        folders.setObjectName("gfMuted")
+        folders.setWordWrap(True)
+        folders.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        folders.setToolTip("Bundled folder first. More folders: comfyui.workflow_dirs in the "
+                           "config file or GENFILL_COMFY_WORKFLOWS.")
+        form.addRow("Workflow folders", folders)
+        lay.addWidget(box)
+        return self.comfy_url
+
+    def _on_comfy_test(self):
+        if self._comfy_job is not None:
+            return
+        url = self.comfy_url.text().strip() or config.comfyui_url()
+        token = self.comfy_token.text().strip() or config.comfyui_token()
+        self._comfy_job = _ComfyTest(url, token)
+        self.comfy_test.setEnabled(False)
+        self._set_comfy_status("Connecting to %s..." % url, False)
+        self._comfy_job.start()
+
+    def _set_comfy_status(self, text, error):
+        self.comfy_status.setText(text)
+        self.comfy_status.setObjectName("gfError" if error else "gfMuted")
+        self.comfy_status.style().unpolish(self.comfy_status)
+        self.comfy_status.style().polish(self.comfy_status)
 
     # accounts -------------------------------------------------------------
     def _refresh_account(self, bid):
@@ -158,6 +253,11 @@ class KeysDialog(QtWidgets.QDialog):
         self._refresh_account(bid)
 
     def _poll(self):
+        job = self._comfy_job
+        if job is not None and job.done:
+            self._comfy_job = None
+            self.comfy_test.setEnabled(True)
+            self._set_comfy_status(job.error or job.text, bool(job.error))
         for bid, acc in self.accounts.items():
             job = acc["job"]
             if job is not None and job.done:
@@ -177,6 +277,9 @@ class KeysDialog(QtWidgets.QDialog):
     def _save(self):
         for bid, field in self.fields.items():
             config.set_api_key(bid, field.text())
+        if not self.comfy_url.isReadOnly():
+            config.set_comfyui(url=self.comfy_url.text())
+        config.set_api_key("comfyui", self.comfy_token.text())
         self.accept()
 
 

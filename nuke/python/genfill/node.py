@@ -43,7 +43,7 @@ PROBE_WRITE = "gf_probe_write"
 CROP_SRC = "gf_crop_src"
 REFORMAT_SRC = "gf_reformat_src"
 WRITE_SRC = "gf_write_src"            # 8-bit PNG (cloud / preview backends)
-WRITE_SRC_F = "gf_write_src_float"    # 32-bit float TIFF (local model)
+WRITE_SRC_F = "gf_write_src_float"    # 32-bit float TIFF (internal)
 TO_MODEL = "gf_to_model"
 TO_MODEL_LOG = "gf_to_model_log"
 TO_MODEL_OCIO = "gf_to_model_ocio"
@@ -84,7 +84,7 @@ COLOR_TOOLTIP = (
     "Log (ACEScct): keeps highlights up to ~222 (scene-linear); flatter look for the model.\n"
     "Input colorspace: always the Read's colorspace.\n"
     "Custom: the colorspace in 'custom colorspace'.\n"
-    "The local model gets 32-bit float in and out; the result goes back through the exact "
+    "Backends that support it get 32-bit float in and out; the result goes back through the exact "
     "inverse. Each variation remembers its encoding.")
 OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feathered selection.\n"
                   "Layer: just the generated fill in Source's format, premultiplied by the "
@@ -538,6 +538,10 @@ def ensure_current(group):
     labels = backend_labels()
     if knob is not None and list(knob.values()) != labels:
         label = knob.value()        # restore by label: indexes shifted when backends were added
+        if label.startswith("Local"):   # the old built-in local backend became ComfyUI
+            label = backends.get("comfyui").label
+            if "gf_model" in group.knobs():
+                group["gf_model"].setValue("")
         knob.setValues(labels)
         knob.setValue(label if label in labels else labels[0])
         changed = True

@@ -11,20 +11,10 @@ if nuke.GUI:
     # "&&" is a literal "&" (Nuke menus are Qt menus, where a single "&" marks a mnemonic).
     _menu.addCommand("API Keys && Accounts...",
                      "import genfill.ui.settings; genfill.ui.settings.show()")
-    _local = _menu.addMenu("Local AI")
-    _local.addCommand("Install / Repair...", "import genfill.ui.localai_dialog as d; d.show()")
-    _local.addCommand("Stop AI Helper (free GPU memory)",
-                      "import genfill.localai.client as c; c.stop_helper()")
-    _local.addCommand("Open Local AI Folder",
-                      "import os, genfill.localai as l; os.startfile(l.root()) if os.path.isdir(l.root()) "
-                      "else nuke.message('Local AI is not installed yet.')")
     # Same commands in Nuke's top menu bar, which is easier to find.
     _top = nuke.menu("Nuke").addMenu("GenFill")
     _top.addCommand("Generative Fill", "import genfill.node; genfill.node.create()")
     _top.addSeparator()
-    _top.addCommand("Local AI: Install / Repair...", "import genfill.ui.localai_dialog as d; d.show()")
-    _top.addCommand("Local AI: Stop AI Helper (free GPU memory)",
-                    "import genfill.localai.client as c; c.stop_helper()")
     _top.addCommand("API Keys && Accounts...",
                     "import genfill.ui.settings; genfill.ui.settings.show()")
     _top.addSeparator()

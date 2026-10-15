@@ -494,16 +494,6 @@ def generate(node, prompt=None, blocking=False):
     backend = gfnode.backend_for(node)
     gflog.info("backend=%s model=%r prompt=%r frame=%s", backend.id, node["gf_model"].value(),
                prompt, nuke.frame())
-    if getattr(backend, "is_installed", None) is not None and not backend.is_installed():
-        msg = "Local AI isn't installed yet. Click 'Local AI...' in the node's panel to install it."
-        gflog.warning(msg)
-        _set_status(_uid(node), running=False, message="", error=msg)
-        if nuke.GUI and not QUIET and nuke.ask(
-                "Local AI isn't installed yet.\n\nOpen the installer now? It downloads about 25 GB "
-                "in the background while you keep working."):
-            from .ui import localai_dialog
-            localai_dialog.show()
-        return False
     # Keys can also be optional (Comfy Cloud: a key, or a browser sign-in).
     api_key = config.get_api_key(backend.id, backend.env_var)
     if backend.needs_key:

@@ -67,7 +67,15 @@ $Obsolete = @(
     'installers\install_local_ai.ps1',
     'installers\install_local_ai.bat',
     'installers\start_local_ai.ps1',
-    'installers\start_local_ai.bat'
+    'installers\start_local_ai.bat',
+    'nuke\python\genfill\backends\local.py',
+    'nuke\python\genfill\localai\__init__.py',
+    'nuke\python\genfill\localai\client.py',
+    'nuke\python\genfill\localai\installer.py',
+    'nuke\python\genfill\localai\worker.py',
+    'nuke\python\genfill\ui\localai_dialog.py',
+    'tests\test_localai.py',
+    'tests\test_installer.py'
 )
 foreach ($rel in $Obsolete) {
     $p = Join-Path $Repo $rel

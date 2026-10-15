@@ -150,6 +150,17 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(g["gf_backend"].value(), "Offline Preview (no AI)")
         self.assertFalse(gfnode.ensure_current(g))
 
+    def test_local_backend_moves_to_comfyui(self):
+        g = self.g
+        old = ["Local: FLUX.1 Fill (free, runs on your GPU)", "Stability", "OpenAI"]
+        g["gf_backend"].setValues(old)
+        g["gf_backend"].setValue(0)
+        g["gf_model"].setValue("flux-fill-dev")
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_backend"].value(), "ComfyUI (local, network or cloud)")
+        self.assertEqual(g["gf_model"].value(), "")
+        self.assertFalse(gfnode.ensure_current(g))
+
     def test_model_cleared_when_not_in_new_backend(self):
         from genfill import backends
         self.assertEqual(gfnode.model_for_backend("gpt-image-1.5", backends.get("fal")), "")
