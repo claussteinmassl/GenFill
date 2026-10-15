@@ -195,15 +195,18 @@ class FakeComfyServer(object):
     ``fail_prompt``: dict answered with HTTP 400 on ``POST /prompt``.
     ``exec_error``: ``True`` (every prompt) or a set of prompt numbers that end in an error.
     ``hold``: history stays empty (the job never finishes).
+    ``history_500``: prompt numbers whose ``/history`` answers HTTP 500.
     ``polls_before_done``: empty ``/history`` answers per prompt before it completes.
     ``requests`` holds ``(method, path, headers, body)``; ``prompts`` the queued payloads.
     """
 
-    def __init__(self, fail_prompt=None, exec_error=False, hold=False, polls_before_done=1):
+    def __init__(self, fail_prompt=None, exec_error=False, hold=False, polls_before_done=1,
+                 history_500=None):
         self.fail_prompt = fail_prompt
         self.exec_error = exec_error
         self.hold = hold
         self.polls_before_done = polls_before_done
+        self.history_500 = history_500   # set of prompt numbers whose /history answers HTTP 500
         self.requests = []
         self.prompts = []        # parsed POST /prompt bodies
         self.uploads = []        # (field names, filename)
@@ -263,6 +266,8 @@ class FakeComfyServer(object):
                 p = urlsplit(self.path)
                 srv.requests.append(("GET", p.path, dict(self.headers), b""))
                 if p.path.startswith("/history/"):
+                    if int(p.path.rsplit("/", 1)[1][1:]) in (srv.history_500 or ()):
+                        return self._send(500, {"error": "boom"})
                     return self._send(200, srv._history(p.path.rsplit("/", 1)[1]))
                 if p.path == "/view":
                     from genfill import pngio

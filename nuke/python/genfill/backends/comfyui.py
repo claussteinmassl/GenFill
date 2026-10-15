@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 import uuid
 
 from . import comfy_workflows
@@ -28,6 +29,7 @@ from .. import region
 
 MAX_SEED = 2 ** 31 - 1
 POLL_INTERVAL = 1.0        # seconds between /history polls
+HISTORY_RETRIES = 3        # tolerated consecutive failed /history polls per job
 UPLOAD_FOLDER = "genfill"
 COMFY_KEY_ENV = "COMFY_API_KEY"
 
@@ -110,6 +112,10 @@ class ComfyClient(object):
         """``(running ids, pending ids)`` from ``GET /queue``."""
         info = self.get_json("/queue")
         return _queue_ids(info.get("queue_running")), _queue_ids(info.get("queue_pending"))
+
+
+class _Timeout(BackendError):
+    """The workflow did not finish within its timeout."""
 
 
 def _queue_ids(entries):
@@ -284,14 +290,31 @@ class ComfyUIBackend(Backend):
         return finish(results, errors, "ComfyUI")
 
     def _wait(self, client, jobs, wf, progress, cancelled, errors):
-        """Poll until every job finished; returns the downloaded images in job order."""
-        done = {}           # prompt id -> list of images (or None if it failed)
+        """Poll until every job finished; returns the downloaded images in job order.
+
+        A failed poll (after retries) or the workflow timeout ends the wait. Images already
+        downloaded are kept (the rest is cleaned up); with none, the error is raised.
+        """
+        done = {}           # prompt id -> list of images
+        fails = {}          # prompt id -> consecutive failed /history polls
+        deadline = time.time() + wf.timeout
 
         def once():
+            if time.time() > deadline:
+                raise _Timeout("Timed out waiting for ComfyUI.")
             for pid, outputs in jobs:
                 if pid in done:
                     continue
-                entry = client.get_json("/history/" + pid).get(pid)
+                try:
+                    entry = client.get_json("/history/" + pid).get(pid)
+                except Cancelled:
+                    raise
+                except BackendError:
+                    fails[pid] = fails.get(pid, 0) + 1
+                    if fails[pid] > HISTORY_RETRIES:
+                        raise
+                    continue
+                fails[pid] = 0
                 if entry:
                     done[pid] = self._collect(client, entry, outputs, errors, cancelled)
             if len(done) == len(jobs):
@@ -300,13 +323,14 @@ class ComfyUIBackend(Backend):
             return None
 
         try:
-            poll(once, cancelled, timeout=wf.timeout, interval=POLL_INTERVAL, what="ComfyUI")
+            poll(once, cancelled, timeout=wf.timeout + 3600, interval=POLL_INTERVAL,
+                 what="ComfyUI")
         except Cancelled:
             raise
         except BackendError as exc:
-            if not str(exc).startswith("Timed out") or not any(done.values()):
+            if not any(done.values()):
                 raise
-            errors.append(str(exc))   # out of time, but keep what was produced
+            errors.append(str(exc))   # keep what was produced, drop the rest
             self._cleanup(client, [pid for pid, _ in jobs if pid not in done])
         return [img for pid, _ in jobs for img in done.get(pid) or []]
 

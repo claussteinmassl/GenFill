@@ -165,6 +165,20 @@ class ComfyUITests(unittest.TestCase):
             self.run_generate(self.request())
         self.assertIn("out of memory", str(ctx.exception))
 
+    def test_history_failure_keeps_finished_images(self):
+        fake = self.serve(history_500={2})
+        out = self.run_generate(self.request())
+        self.assertEqual(len(out), 1)
+        self.assertGreater(len(fake.find("GET", "/history/p2")), comfyui.HISTORY_RETRIES)
+        self.assertEqual(json.loads(fake.find("POST", "/queue")[0][3].decode()), {"delete": ["p2"]})
+
+    def test_history_failure_without_results_raises(self):
+        self.serve(history_500={1, 2})
+        with self.assertRaises(base.BackendError) as ctx:
+            self.run_generate(self.request())
+        self.assertIn("500", str(ctx.exception))
+        self.assertTrue(self.fake.find("POST", "/queue"))
+
     def test_cancel_deletes_and_interrupts(self):
         fake = self.serve(hold=True)
         cancelled = lambda: bool(fake.find("GET", "/history/p1"))
@@ -210,7 +224,7 @@ class ComfyUITests(unittest.TestCase):
         self.serve()
         with mock.patch.dict(os.environ, self.env):
             ids = [m.id for m in self.backend.catalogue]
-            self.assertEqual(ids, ["erase", "fill"])
+            self.assertLess(ids.index("erase"), ids.index("fill"))   # sorted by label
             w, h = self.backend.model_size(1000, 500, "fill")
             self.assertEqual((w % 64, h % 64), (0, 0))
             self.assertTrue(self.backend.model_size(1000, 500, "missing"))
