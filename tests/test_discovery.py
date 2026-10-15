@@ -272,7 +272,8 @@ class CacheTests(CacheMixin, unittest.TestCase):
                          ("new-1", "New One", "inpaint", 3, "n"))
         self.assertEqual(back.extra["ratios"], ["1:1", "16:9"])
         self.assertTrue(back.discovered)
-        self.assertEqual(oct(os.stat(self.cache).st_mode & 0o777), "0o600")
+        if os.name != "nt":   # POSIX file modes don't exist on Windows
+            self.assertEqual(oct(os.stat(self.cache).st_mode & 0o777), "0o600")
 
     def test_corrupt_or_missing_cache(self):
         self.assertEqual(discovery.cached("fakeprov"), [])
