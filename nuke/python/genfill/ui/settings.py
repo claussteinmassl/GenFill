@@ -202,7 +202,7 @@ class KeysDialog(QtWidgets.QDialog):
     def _on_comfy_test(self):
         if self._comfy_job is not None:
             return
-        url = self.comfy_url.text().strip() or config.comfyui_url()
+        url = config.normalize_comfyui_url(self.comfy_url.text()) or config.comfyui_url()
         token = self.comfy_token.text().strip() or config.comfyui_token()
         self._comfy_job = _ComfyTest(url, token)
         self.comfy_test.setEnabled(False)

@@ -140,10 +140,25 @@ def variation_pattern():
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 
 
+def normalize_comfyui_url(url):
+    """Trim ``url`` and prepend ``http://`` when it has no scheme (``192.168.1.20:8188``).
+
+    Args:
+        url: The URL as typed or stored; may be empty.
+
+    Returns:
+        The cleaned URL without a trailing slash, or "" for an empty value.
+    """
+    url = (url or "").strip().rstrip("/")
+    if url and "://" not in url:
+        url = "http://" + url
+    return url
+
+
 def comfyui_url():
     """ComfyUI server URL: ``GENFILL_COMFY_URL``, then ``comfyui.url`` in config, then local."""
     url = _env("GENFILL_COMFY_URL") or str((load().get("comfyui") or {}).get("url") or "").strip()
-    return (url or DEFAULT_COMFY_URL).rstrip("/")
+    return normalize_comfyui_url(url) or DEFAULT_COMFY_URL
 
 
 def comfyui_token():
@@ -166,7 +181,7 @@ def set_comfyui(url=None, workflow_dirs=None):
         section = data.setdefault("comfyui", {})
         if url is not None:
             if url.strip():
-                section["url"] = url.strip().rstrip("/")
+                section["url"] = normalize_comfyui_url(url)
             else:
                 section.pop("url", None)
         if workflow_dirs is not None:

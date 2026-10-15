@@ -275,6 +275,20 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(store["comfyui"], {"url": "http://x:1", "workflow_dirs": ["/w"]})
             config.set_comfyui(url="")
             self.assertEqual(store["comfyui"], {"workflow_dirs": ["/w"]})
+            config.set_comfyui(url=" 192.168.1.20:8188/ ")
+            self.assertEqual(store["comfyui"]["url"], "http://192.168.1.20:8188")
+
+    def test_url_without_scheme_gets_http(self):
+        self.assertEqual(config.normalize_comfyui_url("192.168.1.20:8188"),
+                         "http://192.168.1.20:8188")
+        self.assertEqual(config.normalize_comfyui_url("https://pod.example/"), "https://pod.example")
+        self.assertEqual(config.normalize_comfyui_url("  "), "")
+        env = {"GENFILL_COMFY_URL": "lan:8188"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(config.comfyui_url(), "http://lan:8188")
+        with mock.patch.dict(os.environ, {"GENFILL_COMFY_URL": ""}):
+            with mock.patch.object(config, "load", return_value={"comfyui": {"url": "box:8188"}}):
+                self.assertEqual(config.comfyui_url(), "http://box:8188")
 
 
 if __name__ == "__main__":
