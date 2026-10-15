@@ -680,7 +680,9 @@ def _add_knobs(group):
 
     group.addKnob(nuke.Text_Knob("gf_div_files", "Files"))
     k = nuke.File_Knob("gf_cache_dir", "cache folder")
-    k.setTooltip("Where generated images are stored. Empty = <script folder>/genfill_cache.")
+    k.setTooltip("Where generated images are stored. Empty = the GENFILL_CACHE environment "
+                 "variable if the pipeline sets it, else <script folder>/genfill_cache. "
+                 "Patterns may use tokens such as {script_dir}, {script}, {node} and {user}.")
     group.addKnob(k)
     k = nuke.PyScript_Knob("gf_keys_btn", "API Keys & Accounts...",
                            "import genfill.ui.settings; genfill.ui.settings.show()")

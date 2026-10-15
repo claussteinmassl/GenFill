@@ -22,6 +22,12 @@
   notes in the tooltips. Any provider model id can still be typed.
 - Results may be PNG or JPEG; they are named by content.
 - `installers/live_check.py` generates once against a real provider for verification.
+- **Pipeline setup through environment variables.** `GENFILL_CACHE` sets the result folder for
+  every script (it now also applies to saved scripts; the node's *cache folder* knob still wins),
+  `GENFILL_NAME` and `GENFILL_VARIATION_NAME` name the generation folders and files. All three
+  are patterns with `$VAR` / `${VAR}` / `%VAR%` and tokens such as `{gen:03d}`, `{script}`,
+  `{node}`, `{date}`, read on every Generate, e.g. `${SHOT}_${TASK}_genfill_v{gen:03d}`. GenFill
+  keeps numbering generations itself and never reuses a number.
 
 ## 0.7.1 - 2026-10-13
 

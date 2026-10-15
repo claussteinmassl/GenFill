@@ -297,8 +297,12 @@ def run_smoke_test(output_dir=None, show_result=True):
         g, gen = ctx["g"], ctx["gen"]
         job = os.path.dirname(engine.resolve(g, gen, gen["files"][0]))
         copied = []
-        for name in ("source.png", "mask.png", "mask_alpha.png", "probe.png", "var_01.png"):
-            src = os.path.join(job, name)
+        first = engine.resolve(g, gen, gen["files"][0])
+        sources = [(os.path.join(job, n), n) for n in ("source.png", "mask.png", "mask_alpha.png",
+                                                       "probe.png")]
+        # The first variation keeps its report name, whatever GENFILL_VARIATION_NAME says.
+        sources.append((first, "var_01" + os.path.splitext(first)[1]))
+        for src, name in sources:
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(out, name))
                 copied.append(name)

@@ -226,6 +226,37 @@ class PipelineTests(unittest.TestCase):
         # Old plain-JSON state still loads.
         self.assertEqual(engine.decode_state('{"generations": []}')["generations"], [])
 
+    def test_pipeline_env_sets_folder_and_names(self):
+        from unittest import mock
+        env = {"SHOW": "demo", "SHOT": "sh010", "TASK": "comp",
+               "GENFILL_CACHE": os.path.join(self.tmp, "jobs", "$SHOW", "${SHOT}", "{node}"),
+               "GENFILL_NAME": "${SHOT}_${TASK}_genfill_v{gen:03d}",
+               "GENFILL_VARIATION_NAME": "{name}_var{var:02d}"}
+        with mock.patch.dict(os.environ, env):
+            self.assertTrue(engine.generate(self.g, "crate", blocking=True), engine.status(self.g))
+            folder = os.path.join(self.tmp, "jobs", "demo", "sh010", self.g.name())
+            # A folder that already exists is skipped: the number goes up, nothing is overwritten.
+            os.makedirs(os.path.join(folder, "sh010_comp_genfill_v002"))
+            self.assertTrue(engine.generate(self.g, "crate", blocking=True), engine.status(self.g))
+        gens = engine.get_state(self.g)["generations"]
+        self.assertEqual([g["id"] for g in gens],
+                         ["sh010_comp_genfill_v001", "sh010_comp_genfill_v003"])
+        self.assertEqual([g["number"] for g in gens], [1, 3])
+        self.assertEqual(gens[0]["files"][0], "sh010_comp_genfill_v001/sh010_comp_genfill_v001_var01.png")
+        for f in gens[1]["files"]:
+            self.assertTrue(os.path.exists(os.path.join(folder, f)), f)
+        self.assertNotIn("var_names", gens[0])
+        read = self.g.node(gfnode.READ_RESULT)["file"].value()
+        self.assertTrue(read.startswith(folder.replace("\\", "/")), read)
+
+    def test_bad_name_pattern_stops_before_generating(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"GENFILL_NAME": "{shot}_v{gen}"}):
+            self.assertFalse(engine.generate(self.g, "x", blocking=True))
+        self.assertIn("Unknown token {shot}", engine.status(self.g)["error"])
+        self.assertEqual(fake_nuke.EXECUTED, [])
+        self.assertFalse(engine.is_running(self.g))
+
     def test_missing_key_reports_instead_of_silently_returning(self):
         from unittest import mock
         import genfill.ui

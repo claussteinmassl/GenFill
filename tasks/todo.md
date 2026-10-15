@@ -18,3 +18,14 @@ Plan: docs/superpowers/plans/2026-10-15-cloud-providers.md
 - Live: Magnific end to end through GenFill (OAuth sign-in auto, retouch erase). Higgsfield and Comfy:
   sign-in needs a browser step by the user (timed out unattended); catalogues verified with free preflights / dry runs.
   fal.ai: no key available, mocked only.
+
+# Pipeline environment variables (same branch)
+
+- [x] Keys: already from env (STABILITY_API_KEY, OPENAI_API_KEY, FAL_KEY, COMFY_API_KEY); Magnific/Higgsfield OAuth only
+- [x] naming.py: patterns with $VAR/${VAR}/%VAR% + {token[:fmt]}, safe names, number always present
+- [x] GENFILL_CACHE for every script (knob > env > script dir > config > temp), GENFILL_NAME, GENFILL_VARIATION_NAME
+- [x] Numbers never reused (state "number"), folder collisions bump the number, bad patterns stop before rendering
+- [x] Tests (test_naming.py, pipeline env test), README/ARCHITECTURE/CHANGELOG
+
+## Review
+- 218 unit tests green (macOS py3.9). Knob value with `{tokens}` goes through Nuke's TCL evaluate first: unverified in Nuke.

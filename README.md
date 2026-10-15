@@ -103,6 +103,56 @@ Open **GenFill > API Keys & Accounts...** (also on the node: *API Keys & Account
 Keys and sign-in tokens are stored in `~\.nuke\genfill\config.json`, never in .nk scripts.
 **Generate** also starts the sign-in automatically if it's needed, so you can skip the dialog.
 
+### 4. Pipeline setup (environment variables)
+
+Everything a studio deploys can come from environment variables, which a pipeline tool sets
+when it launches Nuke or opens a shot. GenFill reads them on **every Generate**, so changing
+them per shot (e.g. `os.environ["SHOT"] = "sh020"` in an open-script callback) needs no restart.
+
+| Variable | Meaning |
+|---|---|
+| `STABILITY_API_KEY`, `OPENAI_API_KEY`, `FAL_KEY`, `COMFY_API_KEY` | API keys. They win over keys saved in the dialog. Magnific and Higgsfield have no API keys (browser sign-in only) |
+| `GENFILL_CACHE` | Root folder for results. Used unless the node's *cache folder* knob is set |
+| `GENFILL_NAME` | Name of each generation's folder. Default `g{gen:03d}_{date}-{time}` |
+| `GENFILL_VARIATION_NAME` | File name of each variation (without extension). Default `var_{var:02d}` |
+| `GENFILL_LOG` | Log file path |
+
+The three path and name variables are **patterns**: they can use any environment variable as
+`$VAR`, `${VAR}` or `%VAR%` (on every platform), plus these tokens, with optional
+[format](https://docs.python.org/3/library/string.html#formatspec) such as `{gen:04d}`:
+
+| Token | Value | In |
+|---|---|---|
+| `{script_dir}` | Folder of the .nk script (temp folder if unsaved) | cache |
+| `{script}` | Script name without `.nk` (`untitled` if unsaved) | all |
+| `{node}`, `{uid}` | Node name, node id | all |
+| `{user}` | Login name | all |
+| `{gen}` | Generation number, given by GenFill | name, variation |
+| `{date}`, `{time}` | `20261015`, `143000` | name, variation |
+| `{frame}`, `{backend}`, `{model}` | Reference frame, backend id (`fal`), model id (`default` if empty) | name, variation |
+| `{name}`, `{var}` | The generation's folder name, variation number | variation |
+
+Example: a pipeline tool sets `SHOW`, `SHOT` and `TASK`, and the studio's Nuke environment sets
+
+```
+GENFILL_CACHE=/jobs/$SHOW/$SHOT/comp/genfill/{node}
+GENFILL_NAME=${SHOT}_${TASK}_genfill_v{gen:03d}
+GENFILL_VARIATION_NAME={name}_var{var:02d}
+```
+
+which writes `/jobs/demo/sh010/comp/genfill/GenerativeFill1/sh010_comp_genfill_v001/sh010_comp_genfill_v001_var01.png`.
+
+- GenFill always numbers generations itself, and never reuses a number. If `GENFILL_NAME` has no
+  `{gen}` (or `GENFILL_VARIATION_NAME` no `{var}`), the number is appended.
+- A cache pattern without `{uid}` or `{node}` gets a folder per node (`<root>/<node id>`), so two
+  nodes never mix their results. A relative cache path is taken from the script's folder.
+- Names keep only letters, digits, `.`, `_` and `-`; anything else becomes `_`. An unset
+  variable expands to nothing and is logged. An unknown token stops Generate with a message
+  before anything is rendered or paid for.
+- Without a pipeline the same settings can go into `~/.nuke/genfill/config.json` as
+  `cache_root` (unsaved scripts only), `name_pattern` and `variation_pattern`; environment
+  variables win.
+
 ### Check the build
 
 **GenFill > Developer > Run Smoke Test** builds a throwaway setup, generates with the offline
@@ -165,7 +215,7 @@ Source ── GenerativeFill ── output
 | **color pipeline** | How the plate is encoded for the model. See [Color science](#color-science-a-linear-pipeline-with-display-referred-models) |
 | display colorspace | The display transform to use (`auto` = picked from your OCIO config, e.g. `Output - Rec.709`) |
 | custom colorspace | Used when *color pipeline* is *Custom* |
-| cache folder | Where results are stored. Empty = `<script folder>/genfill_cache/<node id>` |
+| cache folder | Where results are stored. Empty = `GENFILL_CACHE` if set, else `<script folder>/genfill_cache/<node id>`. See [Pipeline setup](#4-pipeline-setup-environment-variables) |
 | reference frame | Frame the selected variation was generated on |
 
 ### What happens on Generate
@@ -472,7 +522,7 @@ uploaded to that company. Use them only when your client / TPN rules allow it.
 
 | What | Where |
 |---|---|
-| Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved). If scripts live in OneDrive/Dropbox this syncs; set **cache folder** to keep it local |
+| Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved), or where `GENFILL_CACHE` points. If scripts live in OneDrive/Dropbox this syncs; set **cache folder** or `GENFILL_CACHE` to keep it local |
 | GenFill log (includes prompts) | `test_output\genfill.log` when installed from the repo, else `~\.nuke\genfill\genfill.log` |
 | Helper / installer logs | `%USERPROFILE%\GenFill-LocalAI\logs\` |
 | API keys and sign-in tokens (cloud only) | `~\.nuke\genfill\config.json`, never in .nk scripts. Sign out removes the tokens |
@@ -525,7 +575,8 @@ nuke/                       <- add this folder to NUKE_PATH (or use installers\i
     colorspace.py           encodings (ACEScct maths, OCIO display/input), Auto decisions
     region.py               selection bounds and context-crop maths (pure Python)
     pngio.py, state.py      dependency-free PNG IO, variation history (pure Python)
-    config.py, log.py       keys / cache defaults, logging
+    config.py, log.py       keys, cache and naming settings, logging
+    naming.py               cache folder and file name patterns (pure Python)
     devtools.py             Reload GenFill, in-Nuke smoke test
     backends/               local.py, stability.py, openai_images.py, fal.py, magnific.py,
                             higgsfield.py, comfy_cloud.py (+ mcp.py, oauth.py, cloud.py), mock.py

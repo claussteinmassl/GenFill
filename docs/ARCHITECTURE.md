@@ -72,6 +72,15 @@ The uid is fixed at creation, so renaming the node doesn't orphan its cache. Pat
 state are relative to the node's cache folder; the absolute folder is kept as a fallback for
 scripts saved after generating.
 
+The root, the generation folder and the variation file names come from patterns
+(`naming.py`): the node's *cache folder* knob, else `GENFILL_CACHE`, else the default above;
+`GENFILL_NAME` (default `g{gen:03d}_{date}-{time}`) and `GENFILL_VARIATION_NAME` (default
+`var_{var:02d}`). Patterns take `$VAR` / `${VAR}` / `%VAR%` environment variables and `{token}`
+values and are read on every Generate. The generation number is GenFill's: stored as `number`,
+never reused (one above every earlier number), bumped while the folder exists, and appended
+when a pattern leaves it out. A root pattern that names `{uid}` or `{node}` gets no extra
+per-node folder. Invalid patterns stop Generate before anything is rendered or paid for.
+
 ## Backends
 
 `backends.base.Backend` has two methods:

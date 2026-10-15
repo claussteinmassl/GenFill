@@ -1,4 +1,4 @@
-"""User settings: API keys and default cache location.
+"""User settings: API keys, sign-in tokens, cache location and naming patterns.
 
 API keys are **never** stored in the .nk script (scripts get shared and
 archived). They come from, in order:
@@ -6,6 +6,11 @@ archived). They come from, in order:
 1. An environment variable (e.g. ``STABILITY_API_KEY``, ``OPENAI_API_KEY``),
    which is how a studio would deploy them.
 2. ``~/.nuke/genfill/config.json``, written by the node's *API Keys & Accounts...* button.
+
+Cache folder and names follow the same rule: an environment variable set by the pipeline
+(``GENFILL_CACHE``, ``GENFILL_NAME``, ``GENFILL_VARIATION_NAME``, see :mod:`genfill.naming`)
+wins over ``config.json`` (``cache_root``, ``name_pattern``, ``variation_pattern``). They are
+read on every Generate, so a pipeline can change them per shot without restarting Nuke.
 """
 from __future__ import annotations
 
@@ -102,9 +107,31 @@ def set_api_key(backend_id, key):
     update(edit)
 
 
+def _env(name):
+    return (os.environ.get(name) or "").strip()
+
+
+def cache_root_pattern():
+    """Cache root pattern from the pipeline (``GENFILL_CACHE``), or ``""``."""
+    return _env("GENFILL_CACHE")
+
+
 def default_cache_root():
     """Fallback cache root when the script is unsaved and no override is set."""
-    root = load().get("cache_root") or os.environ.get("GENFILL_CACHE")
+    root = (load().get("cache_root") or "").strip()
     if root:
         return root
     return os.path.join(tempfile.gettempdir(), "genfill_cache")
+
+
+def name_pattern():
+    """Generation folder pattern: ``GENFILL_NAME``, then config.json, then the default."""
+    from .naming import DEFAULT_NAME
+    return _env("GENFILL_NAME") or (load().get("name_pattern") or "").strip() or DEFAULT_NAME
+
+
+def variation_pattern():
+    """Variation file pattern: ``GENFILL_VARIATION_NAME``, then config.json, then the default."""
+    from .naming import DEFAULT_VARIATION
+    return (_env("GENFILL_VARIATION_NAME") or (load().get("variation_pattern") or "").strip()
+            or DEFAULT_VARIATION)
