@@ -544,7 +544,8 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
         ext = getattr(backend, "result_ext", ".png")
         for i, item in enumerate(images):
             data, preview = item if isinstance(item, tuple) else (item, None)
-            name = "var_%02d%s" % (i + 1, ext)
+            sniffed = backends.base.sniff_image(data) if not backend.float_io else None
+            name = "var_%02d%s" % (i + 1, sniffed if sniffed in (".png", ".jpg") else ext)
             with open(os.path.join(job_dir, name), "wb") as fh:
                 fh.write(data)
             if preview:

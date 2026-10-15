@@ -9,12 +9,16 @@ archived). They come from, in order:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
+import threading
 
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".nuke", "genfill")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+
+_lock = threading.RLock()
 
 
 def load():
@@ -27,6 +31,11 @@ def load():
 
 
 def save(data):
+    with _lock:
+        _save(data)
+
+
+def _save(data):
     if not os.path.isdir(CONFIG_DIR):
         os.makedirs(CONFIG_DIR)
     tmp = CONFIG_PATH + ".tmp"
@@ -37,6 +46,30 @@ def save(data):
         os.chmod(CONFIG_PATH, 0o600)
     except OSError:
         pass
+
+
+def update(fn):
+    """Read-modify-write the config under a lock: ``fn(data)`` edits ``data`` in place."""
+    with _lock:
+        data = load()
+        fn(data)
+        _save(data)
+        return data
+
+
+def get_oauth(provider_id):
+    """Stored OAuth state (client registration, endpoints, tokens) for a provider."""
+    return copy.deepcopy(load().get("oauth", {}).get(provider_id) or {})
+
+
+def set_oauth(provider_id, value):
+    def edit(data):
+        section = data.setdefault("oauth", {})
+        if value:
+            section[provider_id] = value
+        else:
+            section.pop(provider_id, None)
+    update(edit)
 
 
 def get_api_key(backend_id, env_var=None):
@@ -55,13 +88,13 @@ def key_source(backend_id, env_var=None):
 
 
 def set_api_key(backend_id, key):
-    data = load()
-    keys = data.setdefault("api_keys", {})
-    if key:
-        keys[backend_id] = key.strip()
-    else:
-        keys.pop(backend_id, None)
-    save(data)
+    def edit(data):
+        keys = data.setdefault("api_keys", {})
+        if key:
+            keys[backend_id] = key.strip()
+        else:
+            keys.pop(backend_id, None)
+    update(edit)
 
 
 def default_cache_root():
