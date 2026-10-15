@@ -259,22 +259,43 @@ _lock = threading.RLock()
 _quotes = {}       # settings key -> {"quote", "error", "login", "when"}
 _balances = {}     # backend id -> {"balance", "error", "when"}
 _running = set()   # settings keys being fetched
-_balance_running = set()
+_balance_running = {}   # backend id -> epoch of the running balance fetch
+_balance_epoch = {}     # backend id -> bumped by forget_balance; older fetches are discarded
 
 
-def snapshot(backend, model, quality, resolution, count, width, height, prompt, api_key):
-    """Plain dict of everything a quote depends on (take it on the main thread)."""
+def snapshot(backend, model, quality, resolution, count, width, height, prompt, api_key,
+             auth=None):
+    """Plain dict of everything a quote depends on (take it on the main thread).
+
+    ``auth`` is :func:`auth_state` (computed from ``backend`` and ``api_key`` if omitted); it
+    is part of the cache key, so signing in or entering a key fetches a new quote.
+    """
+    if auth is None:
+        auth = auth_state(backend, api_key)
     return {"backend": backend, "model": (model or "").strip(), "quality": quality or "auto",
             "resolution": resolution or "auto", "count": max(1, int(count or 1)),
             "width": int(width), "height": int(height), "prompt": prompt or "",
-            "api_key": api_key or ""}
+            "api_key": api_key or "", "auth": auth}
+
+
+def auth_state(backend, api_key):
+    """``(has_key, signed_in)``: the account state a quote or balance depends on."""
+    signed_in = False
+    fn = getattr(backend, "signed_in", None)
+    if fn is not None:
+        try:
+            signed_in = bool(fn())
+        except Exception:
+            signed_in = False
+    return (bool(api_key), signed_in)
 
 
 def key(snap):
     """Cache key of a snapshot: the settings that change the price (not the prompt text)."""
     b = snap["backend"]
     return (getattr(b, "id", b), snap["model"], snap["quality"], snap["resolution"],
-            snap["count"], snap["width"], snap["height"], bool(snap["prompt"].strip()))
+            snap["count"], snap["width"], snap["height"], bool(snap["prompt"].strip()),
+            snap.get("auth"))
 
 
 def _fresh(entry, ttl, now):
@@ -294,10 +315,12 @@ def request(snap, now=None, threaded=True):
         if k not in _running and not _fresh(_quotes.get(k), QUOTE_TTL, now):
             _running.add(k)
             jobs.append((_fetch_quote, (snap, k)))
+        bkey = _balance_key(backend.id, snap.get("auth"))
         if (backend.id not in _balance_running
-                and not _fresh(_balances.get(backend.id), BALANCE_TTL, now)):
-            _balance_running.add(backend.id)
-            jobs.append((_fetch_balance, (backend, snap["api_key"])))
+                and not _fresh(_balances.get(bkey), BALANCE_TTL, now)):
+            epoch = _balance_epoch.get(backend.id, 0)
+            _balance_running[backend.id] = epoch
+            jobs.append((_fetch_balance, (backend, snap["api_key"], bkey, epoch)))
     for fn, args in jobs:
         if threaded:
             t = threading.Thread(target=fn, args=args, name="GenFill cost (%s)" % backend.id)
@@ -328,7 +351,13 @@ def _fetch_quote(snap, k):
         _running.discard(k)
 
 
-def _fetch_balance(backend, api_key):
+def _balance_key(backend_id, auth):
+    return (backend_id, auth)
+
+
+def _fetch_balance(backend, api_key, bkey=None, epoch=0):
+    """Fetch and store a balance; a result from before :func:`forget_balance` is dropped."""
+    bkey = _balance_key(backend.id, None) if bkey is None else bkey
     entry = {"balance": None, "error": ""}
     try:
         entry["balance"] = backend.balance(api_key)
@@ -336,20 +365,31 @@ def _fetch_balance(backend, api_key):
         entry["error"] = str(exc) or exc.__class__.__name__
     entry["when"] = time.time()
     with _lock:
-        _balances[backend.id] = entry
-        _balance_running.discard(backend.id)
+        if _balance_epoch.get(backend.id, 0) != epoch:
+            return      # started before a generation spent credits: stale
+        _balances[bkey] = entry
+        if _balance_running.get(backend.id) == epoch:
+            del _balance_running[backend.id]
 
 
 def forget_balance(backend_id):
-    """Drop the cached balance (after a generation spent credits)."""
+    """Drop the cached balance (after a generation spent credits).
+
+    A fetch still running was started before the spend; its result is discarded and the
+    next :func:`request` starts a new one.
+    """
     with _lock:
-        _balances.pop(backend_id, None)
+        _balance_epoch[backend_id] = _balance_epoch.get(backend_id, 0) + 1
+        _balance_running.pop(backend_id, None)
+        for k in [k for k in _balances if k[0] == backend_id]:
+            del _balances[k]
 
 
 def reset():
     with _lock:
         _quotes.clear()
         _balances.clear()
+        _balance_running.clear()
 
 
 def lookup(snap):
@@ -358,7 +398,7 @@ def lookup(snap):
     with _lock:
         q = _quotes.get(k)
         busy = k in _running
-        b = _balances.get(snap["backend"].id)
+        b = _balances.get(_balance_key(snap["backend"].id, snap.get("auth")))
     if q is None:
         return (u"estimating cost…" if busy else ""), ""
     if q.get("login"):

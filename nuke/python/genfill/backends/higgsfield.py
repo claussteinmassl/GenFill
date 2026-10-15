@@ -172,6 +172,16 @@ def nearest_ratio(width, height, ratios):
     return min(ratios, key=dist)
 
 
+def _has_jobs(value):
+    """True if a tool answer mentions submitted jobs (``job_id``, ``job_ids``, ``jobs``)."""
+    if isinstance(value, dict):
+        return any(k in ("job_id", "job_ids", "jobs") or _has_jobs(v)
+                   for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_jobs(v) for v in value)
+    return False
+
+
 class HiggsfieldBackend(McpBackend):
     id = "higgsfield"
     label = "Higgsfield (MCP)"
@@ -182,6 +192,7 @@ class HiggsfieldBackend(McpBackend):
     catalogue = _CATALOGUE
     models = tuple(m.id for m in _CATALOGUE)
     discoverable = True
+    _quotes_disabled = False    # set if a get_cost call ever came back with jobs
 
     def discover(self, api_key=""):
         """Live catalogue from ``models_explore`` (image models that take an image or mask)."""
@@ -303,6 +314,8 @@ class HiggsfieldBackend(McpBackend):
         hence the quote is for count 1; a multi-image total is marked approximate. The quote
         is taken without the input image (media ids must be real uploads).
         """
+        if HiggsfieldBackend._quotes_disabled:
+            return None
         client = self.quiet_client(api_key)
         spec = self.model_spec(request.model)
         ratio = nearest_ratio(request.width, request.height, spec.extra.get("ratios") or _BASIC)
@@ -312,6 +325,17 @@ class HiggsfieldBackend(McpBackend):
         params.update(get_cost=True, count=1)
         out = client.call_tool("generate_image", {"params": params,
                                                   "context": "GenFill cost preview"})
+        if _has_jobs(out):
+            # The server ignored get_cost and queued work: never quote this way again.
+            HiggsfieldBackend._quotes_disabled = True
+            try:
+                from .. import log as gflog
+                gflog.error("Higgsfield ignored get_cost and returned jobs (credits may have "
+                            "been spent): %s. Cost quotes are off for this session.",
+                            str(out)[:300])
+            except Exception:
+                pass
+            return None
         cost = out.get("cost") if isinstance(out, dict) else None
         credits = None
         if isinstance(cost, dict):

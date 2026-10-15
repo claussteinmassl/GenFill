@@ -41,6 +41,7 @@ THUMB_H = 92
 COLUMNS = 3
 POLL_MS = 300
 COST_DEBOUNCE = 0.6     # seconds after a settings change before the cost is fetched
+AUTH_CHECK = 1.0        # seconds between checks for a sign-in or a new API key
 REFRESH_ITEM = "__genfill_refresh_models__"   # item data of the "Refresh model list" entry
 
 
@@ -132,6 +133,12 @@ class NukeController(object):
                                 self._engine.resolution(self.node),
                                 max(1, min(10, self.variations())), plan.width, plan.height,
                                 self.prompt(), config.get_api_key(b.id, b.env_var))
+
+    def cost_auth(self):
+        """``pricing.auth_state`` of the current backend (key set, signed in)."""
+        from .. import config, pricing
+        b = self._gfnode.backend_for(self.node)
+        return pricing.auth_state(b, config.get_api_key(b.id, b.env_var))
 
     def request_cost(self, snap):
         """Fetch quote and balance on a worker thread (no-op while cached)."""
@@ -420,6 +427,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self._cost_key = None
         self._cost_due = None       # time.time() when the debounced fetch starts
         self._was_running = False
+        self._auth_checked = 0.0
         self.setObjectName("GenFillPanel")
         self.setStyleSheet(style.STYLESHEET)
         self._build()
@@ -942,12 +950,20 @@ class GenFillPanel(QtWidgets.QWidget):
                 self.ctl.forget_balance()          # the generation spent credits
                 self._cost_due = time.time()
             self._was_running = running
+            now = time.time()
+            if (self._cost_snap is not None and hasattr(self.ctl, "cost_auth")
+                    and now - self._auth_checked >= AUTH_CHECK):
+                self._auth_checked = now
+                if self.ctl.cost_auth() != self._cost_snap.get("auth"):
+                    self._cost_settings()          # signed in / key entered: new cache key
             snap = self._cost_snap
             if snap is None:
                 self.cost_info.setVisible(False)
                 return
-            if self._cost_due is not None and time.time() >= self._cost_due and not running:
+            if self._cost_due is not None and now >= self._cost_due:
                 self._cost_due = None
+            if self._cost_due is None and not running:
+                # Every tick: a no-op while cached, so expired errors and balances refresh.
                 self.ctl.request_cost(snap)
             text, tip = self.ctl.cost_text(snap)
             text = text or u"estimating cost\u2026"    # debouncing a new setting

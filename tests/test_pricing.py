@@ -251,6 +251,65 @@ class CacheTests(unittest.TestCase):
         pricing.request(snap, threaded=False)
         self.assertEqual((len(b.estimates), b.balances), (1, 2))
 
+    def test_auth_state_is_part_of_the_key(self):
+        class Account(FakeBackend):
+            signed = False
+
+            def signed_in(self):
+                return self.signed
+        b = Account(error=LoginRequired("Not signed in"))
+        snap = self.snap(b)
+        self.assertEqual(snap["auth"], (False, False))
+        pricing.request(snap, threaded=False)
+        self.assertEqual(pricing.lookup(snap)[0], "sign in to see cost")
+        b.signed, b.error, b.quote = True, None, pricing.Quote(5, exact=True, count=3)
+        b.bal = pricing.Balance(9)
+        signed = self.snap(b)
+        self.assertNotEqual(pricing.key(signed), pricing.key(snap))
+        self.assertEqual(pricing.lookup(signed), ("", ""))   # nothing cached for the new state
+        pricing.request(signed, threaded=False)
+        self.assertEqual(pricing.lookup(signed)[0], "5 credits for 3 \u00b7 balance 9")
+        keyed = self.snap(b, api_key="k")
+        self.assertEqual(keyed["auth"], (True, True))
+        self.assertNotEqual(pricing.key(keyed), pricing.key(signed))
+
+    def test_error_retried_by_repeated_requests(self):
+        b = FakeBackend(error=BackendError("down"))
+        snap = self.snap(b)
+        pricing.request(snap, threaded=False)
+        when = pricing._quotes[pricing.key(snap)]["when"]
+        pricing.request(snap, now=when + 5, threaded=False)
+        self.assertEqual(len(b.estimates), 1)
+        b.error, b.quote = None, pricing.Quote(3, exact=True, count=3)
+        pricing.request(snap, now=when + pricing.ERROR_TTL + 1, threaded=False)
+        self.assertEqual(pricing.lookup(snap)[0], "3 credits for 3")
+
+    def test_stale_balance_discarded_after_forget(self):
+        import threading
+        started, gate = threading.Event(), threading.Event()
+
+        class Slow(FakeBackend):
+            def balance(self, api_key=""):
+                self.balances += 1
+                if self.balances == 1:
+                    started.set()
+                    gate.wait(5)
+                    return pricing.Balance(100)      # read before the generation
+                return pricing.Balance(70)
+        b = Slow(pricing.Quote(1))
+        snap = self.snap(b)
+        old = threading.Thread(target=pricing.request, args=(snap,),
+                               kwargs={"threaded": False})
+        old.start()
+        started.wait(5)
+        pricing.forget_balance("fake")              # a generation finished meanwhile
+        pricing.request(snap, threaded=False)       # new fetch starts right away
+        self.assertIn("balance 70", pricing.lookup(snap)[0])
+        gate.set()
+        old.join(5)
+        self.assertIn("balance 70", pricing.lookup(snap)[0])   # stale 100 dropped
+        self.assertNotIn("fake", pricing._balance_running)
+
     def test_errors(self):
         snap = self.snap(FakeBackend(error=LoginRequired("Not signed in")))
         pricing.request(snap, threaded=False)

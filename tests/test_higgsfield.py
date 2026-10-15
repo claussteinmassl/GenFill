@@ -310,6 +310,8 @@ class HiggsfieldCostTests(unittest.TestCase):
 
     def setUp(self):
         self.backend = higgsfield.HiggsfieldBackend()
+        higgsfield.HiggsfieldBackend._quotes_disabled = False
+        self.addCleanup(setattr, higgsfield.HiggsfieldBackend, "_quotes_disabled", False)
 
     def quote(self, answer, **kw):
         args = dict(image_path=None, mask_path=None, mask_alpha_path=None, prompt="a red car",
@@ -344,7 +346,22 @@ class HiggsfieldCostTests(unittest.TestCase):
 
     def test_bad_answer_raises(self):
         with self.assertRaises(BackendError):
-            self.quote({"jobs": []})
+            self.quote({"message": "nope"})
+
+    def test_returned_jobs_disable_quotes(self):
+        with mock.patch("genfill.log.error") as err:
+            q, _ = self.quote({"result": {"jobs": [{"job_id": "j1", "status": "pending"}]}})
+        self.assertIsNone(q)                       # shown as "cost unknown"
+        err.assert_called_once()
+        self.assertTrue(higgsfield.HiggsfieldBackend._quotes_disabled)
+        client = mock.Mock()
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            self.assertIsNone(self.backend.estimate(
+                GenerationRequest(None, None, None, "x", 64, 64), ""))
+        client.call_tool.assert_not_called()       # no further quote calls this session
+        self.assertTrue(higgsfield._has_jobs({"job_id": "x"}))
+        self.assertFalse(higgsfield._has_jobs({"cost": {"credits": 1}}))
 
     def test_generate_params_keep_medias(self):
         spec = self.backend.model_spec("gpt_image_2_5")
