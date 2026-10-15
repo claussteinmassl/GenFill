@@ -134,5 +134,48 @@ class PatchTests(unittest.TestCase):
         self.assertEqual(self.wf.mask_loader(), "LoadImageMask")
 
 
+REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+SHIPPED_DIRS = [os.path.join(REPO, "nuke", "workflows", "comfyui"),
+                os.path.join(REPO, "tests", "fixtures", "comfyui")]
+
+
+class ShippedTests(unittest.TestCase):
+    def libraries(self):
+        for folder in SHIPPED_DIRS:
+            lib = cw.load_dir(folder)
+            self.assertTrue(lib, folder)
+            yield folder, lib
+
+    def test_every_shipped_workflow_loads(self):
+        for _, lib in self.libraries():
+            for wid, wf in lib.items():
+                self.assertEqual(wf.error, "", wid)
+
+    def test_empty_prompt_links_exist(self):
+        for _, lib in self.libraries():
+            for wid, wf in lib.items():
+                if wf.empty_prompt:
+                    self.assertIn(wf.empty_prompt, lib, wid)
+                    self.assertEqual(lib[wf.empty_prompt].kind, "erase", wid)
+
+    def test_api_sidecars_flag_api_nodes(self):
+        for _, lib in self.libraries():
+            for wid, wf in lib.items():
+                uses_api = wid.startswith("api_")
+                self.assertEqual(wf.api_nodes, uses_api, wid)
+
+    def test_one_image_and_one_mask_node(self):
+        for _, lib in self.libraries():
+            for wid, wf in lib.items():
+                self.assertEqual(len(wf.nodes_titled(cw.T_IMAGE)), 1, wid)
+                self.assertEqual(len(wf.nodes_titled(cw.T_MASK)), 1, wid)
+
+    def test_erase_workflows_have_no_prompt_node(self):
+        for _, lib in self.libraries():
+            for wid, wf in lib.items():
+                if wf.kind == "erase":
+                    self.assertEqual(wf.nodes_titled(cw.T_PROMPT), [], wid)
+
+
 if __name__ == "__main__":
     unittest.main()

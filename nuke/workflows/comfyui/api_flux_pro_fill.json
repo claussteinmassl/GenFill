@@ -1,0 +1,55 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    },
+    "_meta": {
+      "title": "GenFill Image"
+    }
+  },
+  "2": {
+    "class_type": "LoadImageMask",
+    "inputs": {
+      "image": "example_mask.png",
+      "channel": "red"
+    },
+    "_meta": {
+      "title": "GenFill Mask"
+    }
+  },
+  "3": {
+    "class_type": "FluxProFillNode",
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "mask": [
+        "2",
+        0
+      ],
+      "prompt": "",
+      "prompt_upsampling": false,
+      "guidance": 60.0,
+      "steps": 50,
+      "seed": 0
+    },
+    "_meta": {
+      "title": "GenFill Prompt"
+    }
+  },
+  "90": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "3",
+        0
+      ],
+      "filename_prefix": "GenFill/out"
+    },
+    "_meta": {
+      "title": "GenFill Output"
+    }
+  }
+}
