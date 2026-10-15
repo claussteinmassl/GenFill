@@ -27,8 +27,8 @@ An erase workflow has no `GenFill Prompt` node; it carries a fixed prompt or non
 | `label`, `description` | shown in the model list |
 | `kind` | `inpaint` (default) or `erase` |
 | `empty_prompt` | id of the erase workflow GenFill uses when the prompt is empty |
-| `pixels`, `multiple` | pixel budget and size multiple of the crop sent to the model |
-| `min_side`, `max_side` | side limits of that crop |
+| `pixels`, `multiple` | pixel budget and size multiple of the crop sent to the model (defaults 1048576 and 64). `pixels` is the budget for *auto* and *1K*; *2K* and *4K* use 4 and 16 times it, never more than the crop's own pixel count |
+| `min_side`, `max_side` | side limits of that crop (defaults 512 and 2048). `max_side` also sets the resolutions the workflow offers: 1K always, 2K when `max_side` is at least 2048, 4K when it is at least 4096; a higher setting runs at the largest offered tier ("model max 2K") |
 | `api_nodes` | `true` if the graph uses Comfy API nodes (needs a Comfy account API key, costs credits) |
 | `timeout` | seconds to wait for a result |
 | `requires` | model files the workflow needs, relative to the ComfyUI folder (informational) |

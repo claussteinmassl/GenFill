@@ -83,16 +83,72 @@ per-node folder. Invalid patterns stop Generate before anything is rendered or p
 
 ## Backends
 
-`backends.base.Backend` has two methods:
+`backends.base.Backend` is pure Python (stdlib `urllib`) and knows nothing about Nuke, so every
+backend is unit tested with mocked HTTP. Its interface:
 
-- `model_size(w, h, model)` returns the resolution to send for a crop of that shape.
-- `generate(request, api_key, progress, cancelled)` returns a list of PNG bytes.
+- **Size:** `model_size(w, h, model, resolution)` returns the size to send for a crop of
+  `w` x `h` plate pixels at a processing resolution (`auto`, `1K`, `2K`, `4K`).
+  `size_plan(w, h, model, resolution)` wraps it in a `SizePlan` (width, height, requested and
+  actual tier, clamp note, `native`) for the panel's "sends 2048 × 1152 (2K)" line, the log and
+  the cost preview. `resolutions(model)`, `pixel_limits(model)` and `resolution_plan(...)` give
+  a model's tiers and limits; `request_tier(request)` is the tier to ask the provider for in
+  `generate` and `estimate`.
+- **Generate:** `generate(request, api_key, progress, cancelled)` returns a list of PNG (or
+  JPEG) bytes, one per variation. The engine takes width, height and tier from `size_plan`, so
+  the quoted request and the sent request are the same.
+- **Cost:** `estimate(request, api_key)` returns a `pricing.Quote` (or None) without submitting
+  anything; `balance(api_key)` returns a `pricing.Balance` (or None). Both run on worker
+  threads and never open a browser.
+- **Models:** `catalogue` is the curated tuple of `ModelSpec`s (id, label, kind
+  `inpaint` | `edit` | `erase`, erase partner, max count, note, `extra`). A `discoverable`
+  backend implements `discover(api_key)`; `all_models()` returns the catalogue followed by the
+  cached discovered models it doesn't list (curated entries always win), and `model_spec(id)`
+  looks up both, with an ad-hoc spec for any other typed id. Shared `ModelSpec.extra` keys:
+  `resolutions` (supported tiers; `()` = fixed size; missing = the backend's
+  `default_resolutions`), `min_pixels` and `max_pixels`.
 
-They're pure Python (stdlib `urllib`) and know nothing about Nuke, so they're unit tested with
-mocked HTTP. To add one, subclass, give it a `catalogue` of `ModelSpec`s (id, label, kind
-`inpaint` | `edit` | `erase`, size rules, max count, note) and a `default_model`, then register
-it in `backends/__init__.py`. The catalogue feeds the panel's version menu; any other id typed
-there still reaches the backend.
+To add a backend, subclass, give it a `catalogue` and a `default_model`, implement
+`model_size` and `generate` (plus `estimate` / `balance` / `discover` where the provider
+supports them) and register it in `backends/__init__.py`.
+
+### Processing resolution
+
+`base.py` defines the tiers `1K`, `2K`, `4K` = 1024², 2048², 4096² pixels. `auto` keeps each
+backend's own budget (about 1 MP, the sizes before 0.9). For a tier:
+
+1. `clamp_resolution` picks the tier the model supports (nearest lower one, or its minimum),
+   with a note for the panel ("model max 2K"); fixed-size models stay at `auto`.
+2. `tier_budget` turns it into a pixel budget: never more pixels than the crop has in the
+   plate (no upscaling), then clamped to the model's `max_pixels` / `min_pixels`.
+   `model_size` lays that budget out in the crop's aspect with the model's ratio / multiple
+   rules.
+3. `sent_tier` is the tier the provider is asked for. A crop that is smaller than the tier is
+   sent at its own size, so the provider gets the smallest supported tier that holds it
+   (and bills no more pixels than the crop has). The threshold is `NATIVE_SHARE` = 0.8: a
+   tier holds a crop when its pixel count is at least 0.8 x the crop's (provider tiers are
+   nominal sizes, so a crop up to 1.25 x a tier still counts as that tier). Example: 4K
+   requested, a 2500 x 1400 crop (3.5 MP) is sent at its own size and asked for as 2K.
+   `SizePlan.native` ("crop is smaller than 4K") is set when both the crop and the sent size
+   are below 0.8 x the tier's pixels.
+
+### Cost preview and model discovery
+
+- **Pricing** (`pricing.py`): on the main thread the panel takes a plain `snapshot` of the
+  settings (backend, model, quality, resolution, count, the `size_plan` width and height,
+  whether the prompt is empty, and the auth state: key set / signed in). `request(snapshot)`
+  starts worker threads that call `Backend.estimate` and `Backend.balance`; `lookup` reads the
+  cache. Quotes are cached for 5 minutes per settings key, balances for 60 seconds per backend
+  and auth state, failures for 30 seconds; a generation drops the balance. Sources: provider
+  preflights (Magnific `simulate_cost`, Higgsfield `get_cost`, Comfy `estimate_credits`, fal's
+  pricing API) and static tables (OpenAI per-token prices, fal fallbacks, Stability). Nothing
+  here touches Qt or Nuke.
+- **Discovery** (`backends/discovery.py`): Magnific, Higgsfield and fal.ai implement
+  `discover`. The panel starts a fetch on a worker thread once a day (or with *Refresh model
+  list…*); results are stored atomically, mode 0600, in `~/.nuke/genfill/models_cache.json`
+  (`{"<backend id>": {"fetched": ..., "models": [...]}}`, model metadata only) and are fresh for
+  24 hours. A failed or empty fetch keeps the cache and is retried after an hour. `merge` puts
+  discovered specs (marked `discovered`, shown with "(new)") after the curated ones and relabels
+  label collisions. Discovery never runs on Generate and never opens a browser.
 
 ## Cloud backends over MCP
 
