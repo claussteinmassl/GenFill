@@ -20,6 +20,21 @@ except ImportError:  # pragma: no cover - Python 2 Nuke is not supported
 USER_AGENT = "GenFill-Nuke/0.1"
 
 
+# Prompts for models that re-render the whole crop (GenFill comps the result back through the
+# selection, so they only have to get the selected area right).
+EDIT_EMPTY_PROMPT = ("Remove whatever is inside the masked area and fill it so it seamlessly "
+                     "matches the surrounding image, as a clean plate. Keep lighting, grain, "
+                     "perspective and focus consistent. Change nothing outside the mask.")
+EDIT_PROMPT_SUFFIX = (" Only change the masked area; match the lighting, grain, perspective and "
+                      "focus of the surrounding photo.")
+# Same for reference-edit models that never see the mask: describe the edit in words.
+REF_EMPTY_PROMPT = ("Remove the object in the marked area and fill it so it seamlessly matches "
+                    "the surroundings, as a clean plate. Keep everything else exactly the same: "
+                    "framing, lighting, grain, perspective and focus.")
+REF_PROMPT_SUFFIX = (" Keep everything else in the photo exactly the same: framing, lighting, "
+                     "grain, perspective and focus.")
+
+
 class BackendError(RuntimeError):
     """Raised with a message suitable for showing an artist."""
 

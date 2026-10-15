@@ -29,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover
     raise
 
-from .base import BackendError, Cancelled, http_request
+from .base import BackendError, Cancelled, header, http_request
 from .. import config
 
 CLIENT_NAME = "GenFill for Nuke"
@@ -192,6 +192,8 @@ class OAuthProvider(object):
         st = self._load()
         if st.get("endpoints") and not challenge:
             return st
+        if not challenge:
+            challenge = self._probe_challenge()
         params = parse_www_authenticate(challenge) if challenge else {}
         prm = None
         if params.get("resource_metadata"):
@@ -242,6 +244,21 @@ class OAuthProvider(object):
         st["auth_methods"] = meta.get("token_endpoint_auth_methods_supported") or []
         self._store(st)
         return st
+
+    def _probe_challenge(self):
+        """Ask the MCP server, unauthenticated, where its auth metadata lives (its 401)."""
+        body = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "GenFill", "version": "0"}}}).encode("utf-8")
+        try:
+            status, headers, _ = http_request("POST", self.server_url, body, {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"}, timeout=30)
+        except BackendError:
+            return None
+        if status == 401:
+            return header(headers, "WWW-Authenticate")
+        return None
 
     # ---- registration ----------------------------------------------------------
     def _register(self, st, redirect_uri):

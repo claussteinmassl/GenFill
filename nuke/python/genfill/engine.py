@@ -404,9 +404,9 @@ def generate(node, prompt=None, blocking=False):
             from .ui import localai_dialog
             localai_dialog.show()
         return False
-    api_key = ""
+    # Keys can also be optional (Comfy Cloud: a key, or a browser sign-in).
+    api_key = config.get_api_key(backend.id, backend.env_var)
     if backend.needs_key:
-        api_key = config.get_api_key(backend.id, backend.env_var)
         if not api_key:
             gflog.info("No API key for %s; showing the API Keys dialog", backend.id)
             from .ui import settings

@@ -9,7 +9,8 @@ from __future__ import annotations
 import base64
 import json
 
-from .base import Backend, BackendError, Cancelled, encode_multipart, http_post
+from .base import (EDIT_EMPTY_PROMPT, EDIT_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
+                   encode_multipart, http_post)
 from .. import region
 
 URL = "https://api.openai.com/v1/images/edits"
@@ -19,11 +20,8 @@ FIXED_SIZE_MODELS = ("gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5", "chatgp
 FIXED_SIZES = [(1024, 1024), (1536, 1024), (1024, 1536)]
 FIDELITY_MODELS = ("gpt-image-1", "gpt-image-1.5")
 
-EMPTY_PROMPT = ("Remove whatever is inside the masked area and fill it so it seamlessly "
-                "matches the surrounding image, as a clean plate. Keep lighting, grain, "
-                "perspective and focus consistent. Change nothing outside the mask.")
-PROMPT_SUFFIX = (" Only change the masked area; match the lighting, grain, perspective and "
-                 "focus of the surrounding photo.")
+EMPTY_PROMPT = EDIT_EMPTY_PROMPT
+PROMPT_SUFFIX = EDIT_PROMPT_SUFFIX
 
 
 class OpenAIBackend(Backend):
