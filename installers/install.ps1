@@ -64,8 +64,6 @@ if ($nukes.Count -eq 0) {
 # ---------------------------------------------------------------- obsolete files
 # Files from older GenFill versions that no longer exist in the repo.
 $Obsolete = @(
-    'nuke\python\genfill\backends\comfyui.py',
-    'tests\test_comfyui.py',
     'installers\install_local_ai.ps1',
     'installers\install_local_ai.bat',
     'installers\start_local_ai.ps1',

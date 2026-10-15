@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -186,3 +187,119 @@ def _make_handler(srv):
 def text_result(obj):
     """An MCP tools/call result carrying ``obj`` as JSON text."""
     return {"content": [{"type": "text", "text": json.dumps(obj)}]}
+
+
+class FakeComfyServer(object):
+    """A minimal ComfyUI: upload, prompt queue, history, view, queue, interrupt, system_stats.
+
+    ``fail_prompt``: dict answered with HTTP 400 on ``POST /prompt``.
+    ``exec_error``: ``True`` (every prompt) or a set of prompt numbers that end in an error.
+    ``hold``: history stays empty (the job never finishes).
+    ``polls_before_done``: empty ``/history`` answers per prompt before it completes.
+    ``requests`` holds ``(method, path, headers, body)``; ``prompts`` the queued payloads.
+    """
+
+    def __init__(self, fail_prompt=None, exec_error=False, hold=False, polls_before_done=1):
+        self.fail_prompt = fail_prompt
+        self.exec_error = exec_error
+        self.hold = hold
+        self.polls_before_done = polls_before_done
+        self.requests = []
+        self.prompts = []        # parsed POST /prompt bodies
+        self.uploads = []        # (field names, filename)
+        self.polls = {}
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def find(self, method, path):
+        return [r for r in self.requests if r[0] == method and r[1] == path]
+
+    def _failed(self, number):
+        return self.exec_error is True or (bool(self.exec_error) and number in self.exec_error)
+
+    def _history(self, pid):
+        number = int(pid[1:])
+        self.polls[pid] = self.polls.get(pid, 0) + 1
+        if self.hold or self.polls[pid] <= self.polls_before_done:
+            return {}
+        graph = self.prompts[number - 1]["prompt"]
+        out = next((nid for nid, n in graph.items()
+                    if (n.get("_meta") or {}).get("title") == "GenFill Output"), "5")
+        if self._failed(number):
+            return {pid: {"outputs": {}, "status": {"status_str": "error", "completed": False,
+                                                    "messages": [["execution_error", {
+                                                        "node_type": "KSampler",
+                                                        "exception_message": "out of memory"}]]}}}
+        return {pid: {"status": {"status_str": "success", "completed": True, "messages": []},
+                      "outputs": {out: {"images": [{"filename": "r%d.png" % number,
+                                                    "subfolder": "", "type": "output"}]}}}}
+
+    def _handler(self):
+        srv = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, status, body=b"", ctype="application/json"):
+                if isinstance(body, (dict, list)):
+                    body = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _body(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                return self.rfile.read(n) if n else b""
+
+            def do_GET(self):
+                p = urlsplit(self.path)
+                srv.requests.append(("GET", p.path, dict(self.headers), b""))
+                if p.path.startswith("/history/"):
+                    return self._send(200, srv._history(p.path.rsplit("/", 1)[1]))
+                if p.path == "/view":
+                    from genfill import pngio
+                    img = pngio.Image(4, 4, 3)
+                    for row in img.rows:
+                        row[:] = bytes(bytearray([200] * 12))
+                    return self._send(200, pngio.encode(img), "image/png")
+                if p.path == "/queue":
+                    ids = ["p%d" % (i + 1) for i in range(len(srv.prompts))]
+                    entries = [[i, pid, {}, {}, []] for i, pid in enumerate(ids)]
+                    return self._send(200, {"queue_running": entries[:1],
+                                            "queue_pending": entries[1:]})
+                if p.path == "/system_stats":
+                    return self._send(200, {"system": {"comfyui_version": "0.3.99"},
+                                            "devices": [{"name": "cuda:0 Fake GPU"}]})
+                self._send(404, {"error": "not found"})
+
+            def do_POST(self):
+                p = urlsplit(self.path)
+                body = self._body()
+                srv.requests.append(("POST", p.path, dict(self.headers), body))
+                if p.path == "/upload/image":
+                    text = body.decode("latin-1")
+                    fields = re.findall(r'name="([^"]+)"', text)
+                    fname = re.search(r'filename="([^"]+)"', text).group(1)
+                    srv.uploads.append((fields, fname))
+                    return self._send(200, {"name": fname, "subfolder": "genfill",
+                                            "type": "input"})
+                if p.path == "/prompt":
+                    if srv.fail_prompt is not None:
+                        return self._send(400, srv.fail_prompt)
+                    srv.prompts.append(json.loads(body.decode("utf-8")))
+                    n = len(srv.prompts)
+                    return self._send(200, {"prompt_id": "p%d" % n, "number": n,
+                                            "node_errors": {}})
+                if p.path in ("/queue", "/interrupt"):
+                    return self._send(200, {})
+                self._send(404, {"error": "not found"})
+
+        return H
