@@ -513,7 +513,9 @@ class GenFillPanel(QtWidgets.QWidget):
         opts.setSpacing(6)
         self.quality = self._option_combo(
             opts, "Quality", getattr(self.ctl, "quality_modes", lambda: [])(),
-            "Passed to models that offer it (GPT Image, Ideogram, ...); auto = model default.",
+            "Passed to models that offer it: GPT Image (OpenAI, fal, Magnific, Higgsfield),\n"
+            "Ideogram (fal, Magnific, Higgsfield), Higgsfield Hazel and Grok Image 2.0;\n"
+            "auto = model default.",
             self._on_quality)
         self.resolution = self._option_combo(
             opts, "Resolution", getattr(self.ctl, "resolution_modes", lambda: [])(),

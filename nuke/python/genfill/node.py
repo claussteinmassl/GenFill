@@ -93,6 +93,9 @@ OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feat
                   "Like a Photoshop generative layer with its mask.\n"
                   "Bypass: Source untouched.")
 QUALITY_MODES = ["auto", "low", "medium", "high"]
+QUALITY_TOOLTIP = ("Passed to models that offer it: GPT Image (OpenAI, fal, Magnific, "
+                   "Higgsfield), Ideogram (fal, Magnific, Higgsfield), Higgsfield Hazel and "
+                   "Grok Image 2.0; auto = model default.")
 RESOLUTION_MODES = ["auto", "1K", "2K", "4K"]
 RESOLUTION_TOOLTIP = ("Processing resolution: the size the crop is sent to the model at.\n"
                       "auto: each model's usual size (about 1 megapixel).\n"
@@ -662,7 +665,7 @@ def _add_knobs(group):
     k.setTooltip(MODEL_TOOLTIP)
     group.addKnob(k)
     k = nuke.Enumeration_Knob("gf_quality", "quality", QUALITY_MODES)
-    k.setTooltip("Passed to backends that support it (OpenAI).")
+    k.setTooltip(QUALITY_TOOLTIP)
     group.addKnob(k)
     _add_resolution_knob(group, startline=False)
     k = nuke.Int_Knob("gf_variations", "variations")
