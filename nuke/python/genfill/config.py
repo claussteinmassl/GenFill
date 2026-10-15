@@ -5,7 +5,7 @@ archived). They come from, in order:
 
 1. An environment variable (e.g. ``STABILITY_API_KEY``, ``OPENAI_API_KEY``),
    which is how a studio would deploy them.
-2. ``~/.nuke/genfill/config.json``, written by the node's *API Keys...* button.
+2. ``~/.nuke/genfill/config.json``, written by the node's *API Keys & Accounts...* button.
 """
 from __future__ import annotations
 
@@ -36,16 +36,21 @@ def save(data):
 
 
 def _save(data):
+    # The file holds keys and tokens: private from the first byte, never world-readable.
     if not os.path.isdir(CONFIG_DIR):
-        os.makedirs(CONFIG_DIR)
-    tmp = CONFIG_PATH + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-    os.replace(tmp, CONFIG_PATH)
+        os.makedirs(CONFIG_DIR, 0o700)
+    tmp = "%s.%d.tmp" % (CONFIG_PATH, os.getpid())   # two Nuke sessions never share one
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2, sort_keys=True)
+        os.replace(tmp, CONFIG_PATH)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def update(fn):

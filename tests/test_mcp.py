@@ -49,6 +49,33 @@ def _free_ports(n=2):
     return tuple(ports)
 
 
+class ConfigFileTests(ConfigSandbox):
+    def test_private_file_and_folder(self):
+        sub = os.path.join(self.cfg_dir, "genfill")
+        with mock.patch.object(config, "CONFIG_DIR", sub), \
+                mock.patch.object(config, "CONFIG_PATH", os.path.join(sub, "config.json")), \
+                mock.patch.object(config.os, "replace", wraps=os.replace) as replace:
+            config.set_api_key("fal", "secret")
+            self.assertEqual(config.get_api_key("fal"), "secret")
+            tmp = replace.call_args[0][0]
+            self.assertIn(".%d.tmp" % os.getpid(), tmp)
+            self.assertEqual(os.listdir(sub), ["config.json"])   # no temp file left behind
+            if os.name != "nt":
+                self.assertEqual(os.stat(sub).st_mode & 0o777, 0o700)
+                self.assertEqual(os.stat(config.CONFIG_PATH).st_mode & 0o777, 0o600)
+
+    def test_temp_file_created_private(self):
+        modes = []
+        real_open = os.open
+
+        def spy(path, flags, mode=0o777, *a, **k):
+            modes.append((path, mode))
+            return real_open(path, flags, mode, *a, **k)
+        with mock.patch.object(config.os, "open", spy):
+            config.set_api_key("fal", "secret")
+        self.assertEqual(modes[-1][1], 0o600)
+
+
 class HelperTests(unittest.TestCase):
     def test_www_authenticate(self):
         v = 'Bearer realm="mcp", resource_metadata="https://x/.well-known/a", scope="a b"'
@@ -215,6 +242,78 @@ class OAuthTests(ConfigSandbox):
             self.assertIn("timed out", str(cm.exception))
         with self.assertRaises(base.Cancelled):
             self.provider.login(cancelled=lambda: True)
+
+    def _idle_browser(self, socks):
+        """A 'browser' that connects to the callback port and never sends a request."""
+        import socket
+        from urllib.parse import parse_qs, urlsplit
+
+        def open_browser(url):
+            redirect = parse_qs(urlsplit(url).query)["redirect_uri"][0]
+            s = socket.create_connection(("127.0.0.1", urlsplit(redirect).port))
+            socks.append(s)
+            return True
+        return open_browser
+
+    def test_idle_browser_connection_keeps_cancel_and_timeout(self):
+        self.assertLessEqual(oauth._Handler.timeout, 10)   # a socket timeout is set at all
+        socks = []
+        self.addCleanup(lambda: [s.close() for s in socks])
+        self.provider.open_browser = self._idle_browser(socks)
+        with mock.patch.object(oauth._Handler, "timeout", 0.5):
+            start = time.time()
+            with self.assertRaises(base.Cancelled):
+                self.provider.login(cancelled=lambda: time.time() - start > 0.5)
+            self.assertLess(time.time() - start, 3)
+            with mock.patch.object(oauth, "LOGIN_TIMEOUT", 1):
+                start = time.time()
+                with self.assertRaises(base.BackendError) as cm:
+                    self.provider.login()
+                self.assertIn("timed out", str(cm.exception))
+                self.assertLess(time.time() - start, 4)
+        self.assertEqual(len(socks), 2)
+
+    def test_waiting_for_the_lock_is_cancellable(self):
+        self.provider._lock.acquire()   # another sign-in (e.g. the dialog) holds the lock
+        self.addCleanup(self.provider._lock.release)
+        start = time.time()
+        with self.assertRaises(base.Cancelled):
+            self.provider.login(cancelled=lambda: time.time() - start > 0.3)
+        with self.assertRaises(base.Cancelled):
+            self.provider.access_token(interactive=True, cancelled=lambda: True)
+        self.assertLess(time.time() - start, 2)
+
+    def test_browser_that_fails_to_open_shows_the_url(self):
+        for result in (False, RuntimeError("no display")):
+            def open_browser(url, result=result):
+                if isinstance(result, Exception):
+                    raise result
+                return result
+            self.provider.open_browser = open_browser
+            msgs = []
+            with mock.patch.object(oauth, "LOGIN_TIMEOUT", 0.5), \
+                    mock.patch("genfill.log.warning") as warn:
+                with self.assertRaises(base.BackendError):
+                    self.provider.login(progress=lambda f, m: msgs.append(m))
+            self.assertIn("by hand", warn.call_args[0][1])
+            hint = [m for m in msgs if "by hand" in m]
+            self.assertEqual(len(hint), 1)
+            self.assertIn("code_challenge=", hint[0])
+            self.assertIn("Fake", hint[0])
+
+    def test_callback_page_escapes_the_error(self):
+        import threading
+        from urllib.request import urlopen
+        server = oauth._CallbackServer(("127.0.0.1", 0))
+        self.addCleanup(server.server_close)
+        t = threading.Thread(target=server.handle_request)
+        t.start()
+        page = urlopen("http://127.0.0.1:%d/callback?error=%%3Cscript%%3Ex%%3C/script%%3E"
+                       % server.server_address[1], timeout=5).read().decode("utf-8")
+        t.join(5)
+        self.assertNotIn("<script>", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertEqual(server.result["error"], "<script>x</script>")
 
     def test_sign_out(self):
         self.provider.login()

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -39,6 +40,8 @@ CLIENT_URI = "https://github.com/claussteinmassl/GenFill"
 PORTS = (47321, 47322, 47323, 47324, 47325, 47326, 47327, 47328)
 LOGIN_TIMEOUT = 300
 EXPIRY_MARGIN = 60
+LOCK_POLL = 0.25          # seconds between cancel checks while another sign-in holds the lock
+REQUEST_TIMEOUT = 5       # seconds the callback server waits for a connected browser to speak
 
 DONE_PAGE = (u"<!doctype html><meta charset='utf-8'><title>GenFill</title>"
              u"<body style='font-family:sans-serif;background:#222;color:#ddd;padding:40px'>"
@@ -167,7 +170,8 @@ class OAuthProvider(object):
     # ---- public entry point --------------------------------------------------
     def access_token(self, interactive=False, progress=None, cancelled=None, challenge=None):
         """A valid access token, refreshing or (if ``interactive``) signing in as needed."""
-        with self._lock:
+        self._acquire(cancelled)
+        try:
             st = self._load()
             tokens = st.get("tokens") or {}
             if tokens.get("access_token") and not self._expired(tokens):
@@ -180,11 +184,22 @@ class OAuthProvider(object):
                 raise LoginRequired("Not signed in to %s. Sign in with API Keys & Accounts..."
                                     % self.label)
             return self._login(progress, cancelled, challenge)
+        finally:
+            self._lock.release()
 
     def login(self, progress=None, cancelled=None):
         """Force a browser sign-in (the Sign in button)."""
-        with self._lock:
+        self._acquire(cancelled)
+        try:
             return self._login(progress, cancelled, None)
+        finally:
+            self._lock.release()
+
+    def _acquire(self, cancelled):
+        """Take the sign-in lock, staying cancellable while another sign-in holds it."""
+        while not self._lock.acquire(timeout=LOCK_POLL):
+            if cancelled and cancelled():
+                raise Cancelled("Cancelled")
 
     # ---- discovery -----------------------------------------------------------
     def discover(self, challenge=None):
@@ -330,7 +345,7 @@ class OAuthProvider(object):
             url = auth_url + ("&" if "?" in auth_url else "?") + urlencode(query)
             if progress:
                 progress(0.02, "Sign in to %s in your browser..." % self.label)
-            self.open_browser(url)
+            self._open(url, progress)
             params = server.wait(LOGIN_TIMEOUT, cancelled)
         finally:
             server.server_close()
@@ -350,6 +365,24 @@ class OAuthProvider(object):
             "resource": st["resource"],
         }
         return self._token_request(st, form, "Sign-in")
+
+    def _open(self, url, progress):
+        """Open ``url`` in the browser; if that fails, tell the artist where to go by hand."""
+        try:
+            opened = self.open_browser(url)
+        except Exception:  # webbrowser can raise anything on a broken desktop setup
+            opened = False
+        if opened is not False:
+            return
+        msg = ("Could not open a browser. To sign in to %s, open this address by hand: %s"
+               % (self.label, url))
+        try:
+            from .. import log as gflog
+            gflog.warning("%s", msg)
+        except Exception:
+            pass
+        if progress:
+            progress(0.02, msg)
 
     def _refresh(self, st):
         form = {"grant_type": "refresh_token",
@@ -397,6 +430,10 @@ class OAuthProvider(object):
 
 
 class _Handler(BaseHTTPRequestHandler):
+    # A browser may open a (preconnect) socket and never send a request. Without a socket
+    # timeout that read would block wait() forever, past cancel and the sign-in deadline.
+    timeout = REQUEST_TIMEOUT
+
     def do_GET(self):  # noqa: N802 - http.server API
         parts = urlsplit(self.path)
         if parts.path != "/callback":
@@ -405,10 +442,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         params = {k: v[0] for k, v in parse_qs(parts.query).items()}
         ok = "code" in params and "error" not in params
+        error = html.escape(params.get("error", "unknown error"))
         page = DONE_PAGE % (
             ("Signed in" if ok else "Sign-in failed"),
             ("You can close this tab and go back to Nuke." if ok
-             else "GenFill couldn't sign in: %s" % params.get("error", "unknown error")))
+             else "GenFill couldn't sign in: %s" % error))
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
