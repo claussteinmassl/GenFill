@@ -609,11 +609,12 @@ def _add_knobs(group):
     # ---- Settings tab ----------------------------------------------------
     group.addKnob(nuke.Tab_Knob("gf_settings_tab", "Settings"))
     k = nuke.Enumeration_Knob("gf_backend", "model", backend_labels())
-    k.setTooltip("Which generator to use. API keys are set with the API Keys button, "
-                 "never saved in the script.")
+    k.setTooltip("Which generator to use. API keys and cloud accounts are set with the "
+                 "API Keys & Accounts button, never saved in the script.")
     group.addKnob(k)
     k = nuke.String_Knob("gf_model", "model version", "")
-    k.setTooltip("Optional model override, e.g. gpt-image-1.5. Empty = backend default.")
+    k.setTooltip("Model id for the chosen backend; pick one from the panel's version menu or "
+                 "type any id the provider offers. Empty = backend default.")
     group.addKnob(k)
     k = nuke.Enumeration_Knob("gf_quality", "quality", QUALITY_MODES)
     k.setTooltip("Passed to backends that support it (OpenAI).")
@@ -654,7 +655,7 @@ def _add_knobs(group):
     k = nuke.File_Knob("gf_cache_dir", "cache folder")
     k.setTooltip("Where generated images are stored. Empty = <script folder>/genfill_cache.")
     group.addKnob(k)
-    k = nuke.PyScript_Knob("gf_keys_btn", "API Keys...",
+    k = nuke.PyScript_Knob("gf_keys_btn", "API Keys & Accounts...",
                            "import genfill.ui.settings; genfill.ui.settings.show()")
     k.setFlag(nuke.STARTLINE)
     group.addKnob(k)

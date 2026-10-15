@@ -413,7 +413,7 @@ def generate(node, prompt=None, blocking=False):
             settings.show(focus=backend.id)
             api_key = config.get_api_key(backend.id, backend.env_var)
             if not api_key:
-                msg = ("No API key set for %s. Add one with API Keys..., or switch the model "
+                msg = ("No API key set for %s. Add one with API Keys & Accounts..., or switch the model "
                        "to Offline Preview to test without a key." % backend.label)
                 gflog.warning(msg)
                 _set_status(_uid(node), running=False, message="", error=msg)
