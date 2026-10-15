@@ -80,7 +80,68 @@ scripts saved after generating.
 - `generate(request, api_key, progress, cancelled)` returns a list of PNG bytes.
 
 They're pure Python (stdlib `urllib`) and know nothing about Nuke, so they're unit tested with
-mocked HTTP. To add one, subclass, then register it in `backends/__init__.py`.
+mocked HTTP. To add one, subclass, give it a `catalogue` of `ModelSpec`s (id, label, kind
+`inpaint` | `edit` | `erase`, size rules, max count, note) and a `default_model`, then register
+it in `backends/__init__.py`. The catalogue feeds the panel's version menu; any other id typed
+there still reaches the backend.
+
+## Cloud backends over MCP
+
+Magnific, Higgsfield and Comfy Cloud are reached through their remote MCP servers. GenFill is
+its own MCP client (stdlib only, so it runs in Nuke's Python on every OS); fal.ai uses its plain
+REST queue API instead.
+
+```
+engine.generate ──▶ Backend.generate(request, api_key, progress, cancelled)
+                      │  McpBackend (cloud.py): server_url, client(), provider()
+                      ▼
+                    McpClient (mcp.py) ── JSON-RPC over HTTPS ──▶ MCP server
+                      │  Authorization: Bearer / X-API-Key         initialize, tools/call
+                      ▼
+                    OAuthProvider (oauth.py) ── browser + 127.0.0.1:47321-47328/callback
+                      │                          tokens: config.json  oauth.<id>
+                      └─ 401 ─▶ refresh_token ─▶ (still 401) interactive sign-in
+```
+
+- **MCP client** (`backends/mcp.py`): Streamable HTTP. `initialize`, `notifications/initialized`,
+  `tools/call`. Replies may be JSON or an SSE stream (the response with the matching `id` is
+  picked). It keeps `Mcp-Session-Id` and re-initialises if the session expires. `call_tool`
+  returns `structuredContent`, else the parsed JSON text, and turns `isError` into a
+  `BackendError`. A 401 triggers one token refresh, then (if allowed) a browser sign-in.
+- **OAuth 2.1** (`backends/oauth.py`): discovery from the server's 401 (`WWW-Authenticate`
+  resource metadata, RFC 9728) and the authorization server's metadata (RFC 8414); dynamic client
+  registration as a public client; authorization code with PKCE (S256), `state` and `resource`.
+  A one-shot `http.server` on `127.0.0.1:47321-47328/callback` receives the code (first free
+  port; waiting is cancellable and times out after 5 minutes). Tokens, expiry and the
+  registration are stored under `oauth.<id>` in `~/.nuke/genfill/config.json`; refresh is silent.
+  Sign out deletes them. If a key is set and the backend has an `api_key_header` (Comfy's
+  `X-API-Key`), the key is used instead of OAuth.
+- **`McpBackend` / `cloud.py`**: shared plumbing for these backends: the client factory, one
+  `OAuthProvider` per backend, `ref_prompt` (the instruction for edit models, which never see
+  the mask), `put_bytes` (presigned PUT), `poll` (cancellable). Sign-in happens inside the
+  generation thread, so Nuke's UI never blocks; the panel shows "Waiting for sign-in...".
+- **Results** are named `.png` or `.jpg` by their content. Models answer at their own size;
+  the node's Reformat resamples the result to the crop.
+
+**Magnific** (`magnific.py`): `creations_request_upload` -> PUT -> `creations_finalize_upload`
+for the plate and mask, once. Retouch models call `images_retouch` (one call per variation);
+edit models call `images_generate` with the crop as reference. `creations_wait` long-polls the
+creations; results are downloaded. Empty prompt = `images_retouch` in erase mode.
+
+**Higgsfield** (`higgsfield.py`): `media_upload` -> PUT -> `media_confirm`, then
+`generate_image_batch` and `jobs_wait` until all jobs are terminal. The server rejects a mask
+role, so every model is a reference edit with `ref_prompt`.
+
+**Comfy Cloud** (`comfy_cloud.py`): `upload_file` returns a single-use PUT URL. Mask models run
+as one API-format graph via `submit_workflow`: `LoadImage` and `LoadImageMask` feeding N fill
+nodes (`FluxProFillNode`, `BriaGenFill`, `RecraftImageInpaintingNode`, or `FluxEraseNode` /
+`BriaEraser` for an empty prompt) into one `SaveImage` each; then `wait_for_job` and
+`get_output`. Edit models (Kontext, Nano Banana, Qwen, Flux 2) use `partner_generate` per
+variation. Cancel calls `cancel_job`.
+
+**fal.ai** (`fal.py`, REST queue): upload the crop and mask to the fal CDN, `POST` one request
+per variation (or one with `num_images`) to `queue.fal.run/<model>`, poll the returned
+`status_url`, read the `response_url`, download the images. `Authorization: Key <FAL_KEY>`.
 
 ## Local AI (free, offline)
 

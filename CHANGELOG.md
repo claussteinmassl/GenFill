@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0 - 2026-10-15
+
+- **Four new cloud backends: fal.ai, Magnific, Higgsfield and Comfy Cloud.** Pick them in the
+  Model menu. Magnific was verified end to end against the live service (browser sign-in,
+  upload, Retouch erase, download); the others are covered by unit tests with mocked services.
+  - **fal.ai**: one `FAL_KEY`; FLUX.1 Fill [pro] by default, FLUX Erase for an empty prompt, plus
+    Ideogram, GPT Image 2, Qwen, Bria, OneReward and reference-edit models.
+  - **Magnific**: pixel-preserving Retouch models (default Retouch Auto, erase for an empty
+    prompt) and reference-edit models, billed to your Magnific credits.
+  - **Higgsfield**: reference-edit models (GPT Image 2.5 default, Nano Banana, Seedream, FLUX,
+    Ideogram). The server takes no mask, so GenFill composites the result back through the
+    selection.
+  - **Comfy Cloud**: Flux Pro Fill, Bria GenFill, Recraft inpaint (Flux Erase / Bria Eraser for
+    an empty prompt) and partner edit models. API key (`COMFY_API_KEY`) or sign-in.
+- **Sign in from the dialog or by just clicking Generate.** *API Keys & Accounts* has Sign in /
+  Sign out per provider. The browser opens once; tokens refresh silently and live in
+  `~/.nuke/genfill/config.json`, never in .nk scripts. Built on a stdlib MCP client and OAuth 2.1
+  (PKCE, dynamic client registration, loopback 127.0.0.1:47321-47328).
+- **Model version menu** next to Model: the provider's curated models (empty = default), with
+  notes in the tooltips. Any provider model id can still be typed.
+- Results may be PNG or JPEG; they are named by content.
+- `installers/live_check.py` generates once against a real provider for verification.
+
 ## 0.7.1 - 2026-10-13
 
 - README rewritten for the current build, with a full colour science section (encode / generate /
