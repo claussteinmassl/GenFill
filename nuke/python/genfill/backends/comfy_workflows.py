@@ -132,6 +132,20 @@ def validate(graph):
     return ""
 
 
+NUMERIC_META = {"timeout": float, "pixels": int, "multiple": int, "min_side": int, "max_side": int}
+
+
+def _numeric_error(meta):
+    """Error message for a sidecar whose numeric settings are not numbers, or ``""``."""
+    for key, cast in NUMERIC_META.items():
+        if key in meta:
+            try:
+                cast(meta[key])
+            except (TypeError, ValueError):
+                return "sidecar %s is not a number: %r" % (key, meta[key])
+    return ""
+
+
 def load(path):
     """Load one ``<id>.json`` (and its sidecar). Never raises: problems go to ``error``."""
     wid = os.path.basename(path)[:-len(".json")]
@@ -141,13 +155,17 @@ def load(path):
         if os.path.exists(side):
             with open(side, "r") as fh:
                 meta = json.load(fh)
+        if not isinstance(meta, dict):
+            meta = {}
+        error = _numeric_error(meta)
+        if error:
+            meta = {}
         with open(path, "r") as fh:
             graph = json.load(fh)
-        error = validate(graph)
+        error = error or validate(graph)
     except (IOError, OSError, ValueError) as exc:
         error = "cannot read: %s" % exc
-    return Workflow(wid, path, graph if not error else {}, meta if isinstance(meta, dict) else {},
-                    error)
+    return Workflow(wid, path, graph if not error else {}, meta, error)
 
 
 def load_dir(folder):

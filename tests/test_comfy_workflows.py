@@ -64,6 +64,18 @@ class LoadTests(unittest.TestCase):
         self.assertIn("Export (API)", lib["ui"].error)
         self.assertTrue(lib["broken"].error)
 
+    def test_non_numeric_sidecar_values_are_listed_with_an_error(self):
+        write(self.tmp, "slow", GRAPH, {"timeout": "abc"})
+        write(self.tmp, "wide", GRAPH, {"pixels": "x", "label": "Wide"})
+        write(self.tmp, "good", GRAPH, {"timeout": 60})
+        lib = cw.load_dir(self.tmp)
+        self.assertIn("timeout", lib["slow"].error)
+        self.assertIn("pixels", lib["wide"].error)
+        self.assertEqual(lib["slow"].graph, {})
+        self.assertEqual(lib["good"].error, "")
+        self.assertEqual(lib["good"].timeout, 60.0)
+        self.assertIn("slow", cw.library([self.tmp]))
+
     def test_later_folders_override(self):
         other = tempfile.mkdtemp()
         try:
