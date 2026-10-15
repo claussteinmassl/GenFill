@@ -111,7 +111,9 @@ def _knob_factory(cls_name):
             default = 0
         else:
             default = None
-        return Knob(name, label, default)
+        knob = Knob(name, label, default)
+        knob.kind = cls_name
+        return knob
     return make
 
 

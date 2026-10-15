@@ -21,7 +21,7 @@ QLabel#gfSection {{ color: {muted}; font-size: 11px; font-weight: 600;
 QLabel#gfMuted {{ color: {muted}; font-size: 11px; }}
 QLabel#gfError {{ color: {error}; font-size: 11px; }}
 QFrame#gfBar {{ background: {bar}; border: 1px solid {bar_border}; border-radius: 10px; }}
-QLineEdit#gfPrompt {{ background: transparent; border: none; color: {text};
+QPlainTextEdit#gfPrompt {{ background: transparent; border: none; color: {text};
                      font-size: 13px; padding: 4px 2px; selection-background-color: {accent}; }}
 QPushButton#gfGenerate {{ background: {accent}; color: white; border: none; border-radius: 15px;
                          font-size: 12px; font-weight: 600; padding: 6px 16px 6px 12px; }}

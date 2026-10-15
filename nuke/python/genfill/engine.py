@@ -225,7 +225,9 @@ def refresh_result(node):
     node["gf_has_result"].setValue(True)
     order = gfstate.variations(st)
     idx = order.index((gi, vi)) + 1
-    prompt = gen.get("prompt") or "(remove)"
+    # gf_info is a one-line label: use the first non-empty line of a multi-line prompt.
+    lines = [l.strip() for l in (gen.get("prompt") or "").splitlines() if l.strip()]
+    prompt = lines[0] if lines else "(remove)"
     for bad, good in (("[", "("), ("]", ")"), ("{", "("), ("}", ")"), ("$", ""), ("\\", "/")):
         prompt = prompt.replace(bad, good)
     if len(prompt) > 28:

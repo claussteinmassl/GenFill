@@ -658,7 +658,7 @@ def _add_knobs(group):
     k.setValue(0)
     k.setTooltip("0 = new random seed every time (Photoshop behaviour).")
     group.addKnob(k)
-    k = nuke.String_Knob("gf_negative", "negative prompt", "")
+    k = nuke.Multiline_Eval_String_Knob("gf_negative", "negative prompt", "")
     k.setTooltip("What to avoid (Stability only).")
     group.addKnob(k)
 
@@ -701,7 +701,7 @@ def _add_knobs(group):
 
     # ---- hidden state ----------------------------------------------------
     for knob in (nuke.Boolean_Knob("gf_has_result", "has result"),
-                 nuke.String_Knob("gf_prompt", "prompt", ""),
+                 nuke.Multiline_Eval_String_Knob("gf_prompt", "prompt", ""),
                  nuke.String_Knob("gf_info", "info", ""),
                  nuke.String_Knob("gf_uid", "uid", uuid.uuid4().hex[:12]),
                  nuke.Multiline_Eval_String_Knob("gf_state", "state", "")):

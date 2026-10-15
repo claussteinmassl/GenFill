@@ -247,6 +247,57 @@ class Thumbnail(QtWidgets.QLabel):
 # panel
 # --------------------------------------------------------------------------
 
+class PromptEdit(QtWidgets.QPlainTextEdit):
+    """Multi-line prompt field: 3 lines tall, grows to 8 with its content.
+
+    Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS, which Qt maps to
+    the control modifier) emits ``submitted``. ``committed`` is emitted when
+    the field loses focus so the text can be written to the node.
+    """
+
+    MIN_LINES = 3
+    MAX_LINES = 8
+    submitted = QtCore.Signal()
+    committed = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super(PromptEdit, self).__init__(parent)
+        self.setTabChangesFocus(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.textChanged.connect(self._fit_height)
+        self._fit_height()
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        self.setPlainText(text)
+
+    def keyPressEvent(self, event):
+        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                and event.modifiers() & Qt.ControlModifier):
+            self.submitted.emit()
+            return
+        super(PromptEdit, self).keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        super(PromptEdit, self).focusOutEvent(event)
+        self.committed.emit()
+
+    def resizeEvent(self, event):
+        super(PromptEdit, self).resizeEvent(event)
+        self._fit_height()
+
+    def _fit_height(self):
+        """Size to the content (wrapped lines included), within the line limits."""
+        lines = int(self.document().documentLayout().documentSize().height())
+        lines = max(self.MIN_LINES, min(self.MAX_LINES, lines))
+        margin = int(self.document().documentMargin()) * 2 + 2 * self.frameWidth()
+        height = lines * self.fontMetrics().lineSpacing() + margin
+        if self.height() != height:
+            self.setFixedHeight(height)
+
+
 class GenFillPanel(QtWidgets.QWidget):
     """The widget returned to Nuke's PyCustom_Knob."""
 
@@ -334,13 +385,13 @@ class GenFillPanel(QtWidgets.QWidget):
         self.next_btn.setText(u"›")
         self.next_btn.setToolTip("Next variation")
         self.next_btn.clicked.connect(lambda: self.ctl.step(1))
-        self.prompt = QtWidgets.QLineEdit()
+        self.prompt = PromptEdit()
         self.prompt.setObjectName("gfPrompt")
         self.prompt.setPlaceholderText("Describe what you want to generate (optional)")
         self.prompt.setToolTip("Leave empty to remove the selected content and fill from "
-                               "the surroundings.\nEnter = Generate")
-        self.prompt.returnPressed.connect(self._on_generate)
-        self.prompt.editingFinished.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
+                               "the surroundings.\nCtrl+Enter = Generate, Enter = new line")
+        self.prompt.submitted.connect(self._on_generate)
+        self.prompt.committed.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
         self.generate_btn = QtWidgets.QPushButton("Generate")
         self.generate_btn.setObjectName("gfGenerate")
         self.generate_btn.setIcon(QtGui.QIcon(sparkle_pixmap(14, "#ffffff")))
@@ -355,6 +406,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self.nav_sep.setStyleSheet("color: #444;")
         bl.addWidget(self.nav_sep)
         bl.addWidget(self.prompt, 1)
+        bl.setAlignment(self.prompt, Qt.AlignVCenter)
         bl.addWidget(self.generate_btn)
         root.addWidget(bar)
 
@@ -473,8 +525,7 @@ class GenFillPanel(QtWidgets.QWidget):
         if self.ctl.status().get("running"):
             self.ctl.cancel()
             return
-        text = self.prompt.text()
-        self.ctl.set_prompt(text)
+        self.ctl.set_prompt(self.prompt.text())
         # Immediate feedback: preparing the crop renders on the main thread.
         self._local_error = ""
         self.status.setObjectName("gfMuted")
@@ -483,7 +534,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self.generate_btn.setEnabled(False)
         QtWidgets.QApplication.processEvents()
         try:
-            self.ctl.generate(text)
+            self.ctl.generate(self.prompt.text())
         finally:
             self.generate_btn.setEnabled(True)
         self._sync(force=True)

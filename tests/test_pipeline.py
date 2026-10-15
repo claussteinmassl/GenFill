@@ -237,6 +237,24 @@ class PipelineTests(unittest.TestCase):
         # Old plain-JSON state still loads.
         self.assertEqual(engine.decode_state('{"generations": []}')["generations"], [])
 
+    def test_multiline_prompt_round_trip(self):
+        prompt = "a [red] car\n\n{on} a $road\nat dusk"
+        self.assertEqual(self.g["gf_prompt"].kind, "Multiline_Eval_String_Knob")
+        self.assertEqual(self.g["gf_negative"].kind, "Multiline_Eval_String_Knob")
+        self.assertTrue(engine.generate(self.g, prompt, blocking=True))
+        self.assertEqual(self.g["gf_prompt"].value(), prompt)
+        self.assertEqual(engine.get_state(self.g)["generations"][0]["prompt"], prompt)
+        raw = self.g["gf_state"].value()
+        for ch in "[]{}$\n":
+            self.assertNotIn(ch, raw)
+        info = self.g["gf_info"].value()
+        self.assertNotIn("\n", info)
+        self.assertTrue(info.startswith("a (red) car"), info)
+        self.assertNotIn("road", info)
+        # Leading blank lines are skipped.
+        engine.generate(self.g, "\n  \nsecond line first", blocking=True)
+        self.assertTrue(self.g["gf_info"].value().startswith("second line first"))
+
     def test_pipeline_env_sets_folder_and_names(self):
         from unittest import mock
         env = {"SHOW": "demo", "SHOT": "sh010", "TASK": "comp",
