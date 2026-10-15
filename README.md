@@ -9,16 +9,17 @@ no 8-bit sRGB export, no clipped highlights.
 
 - **One node, one panel.** The selection, prompt, variations, blend controls and output all
   live on the GenerativeFill node. The Roto tools appear in the Viewer as soon as its panel is open.
-- **Free and local.** FLUX.1 Fill and LaMa run on your NVIDIA GPU inside the plugin. Nothing is
-  uploaded and there are no tokens. Cloud models (Stability AI, OpenAI, fal.ai, Magnific,
-  Higgsfield, Comfy Cloud) are optional.
-- **Linear-safe.** An invertible color encoding plus 32-bit float transport means generated
-  pixels come back into your working space with highlights above 1.0 intact. See
+- **Free and local through ComfyUI.** Point GenFill at a ComfyUI on your machine, your network or
+  a RunPod pod and run any inpainting workflow, such as the shipped FLUX.1 Fill. Nothing is
+  uploaded with a local server and there are no tokens. Cloud models (Stability AI, OpenAI,
+  fal.ai, Magnific, Higgsfield, Comfy Cloud) are optional.
+- **Linear-safe.** An invertible color encoding means the model sees a display-like image and
+  its result is decoded back into your working space, with the plate's highlights above 1.0 outside the fill untouched. See
   [Color science](#color-science-a-linear-pipeline-with-display-referred-models).
 - **Farm-safe.** The node is a Group of native Nuke nodes. Once you've picked a variation, the
   script renders anywhere, even where GenFill isn't installed.
 
-Current version: **0.8.0** (see [CHANGELOG.md](CHANGELOG.md)).
+Current version: **0.9.0** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ---
 
@@ -43,8 +44,8 @@ Current version: **0.8.0** (see [CHANGELOG.md](CHANGELOG.md)).
 | Photoshop | GenFill in Nuke |
 |---|---|
 | Lasso / marquee selection | **✏ Draw Selection**: Roto shapes drawn on the node itself, with the shape list in the same panel. Or use any matte in the **Mask** input, or the Source alpha |
-| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates |
-| Empty prompt = remove and fill from surroundings | Same. Locally: LaMa for a clean plate, then FLUX variations with texture. Stability AI: their *Erase* model |
+| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Empty prompt = remove and fill from surroundings | Same. ComfyUI: the workflow's erase partner (e.g. FLUX.1 Fill with a fixed empty-background prompt). Stability AI: their *Erase* model |
 | 3 variations per click, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows; right-click to reuse a prompt, reveal or delete |
 | Generative layer with a layer mask | **output: Comp** (fill blended over the plate through the expanded, feathered selection) or **Layer** (just the fill, in the plate's format, premultiplied by that selection) |
 | 8-bit sRGB document | Scene-linear float. The model sees an invertible encoding of the plate and its result is decoded back |
@@ -67,27 +68,55 @@ Run it again whenever you want the latest build. Restart Nuke afterwards. Detail
 Supported: Nuke 13 to 17 (Python 3, PySide2 or PySide6). The installer is Windows-only for now;
 on macOS/Linux add the repo's `nuke` folder to `NUKE_PATH`.
 
-### 2. The free local AI (optional, recommended)
+### 2. ComfyUI (optional, recommended)
 
-In Nuke: **GenFill > Local AI > Install / Repair...** (also the **⚙ Local AI...** button on the
-panel). It runs in the background with a progress dialog and needs:
+GenFill runs workflows on a ComfyUI server. Install [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+yourself (desktop app, portable build or a RunPod template), start it, then open
+**GenFill > API Keys & Accounts...** and look at the **ComfyUI** group.
 
-- an NVIDIA GPU with 8 GB+ VRAM (12 GB recommended) and a recent driver,
-- about 25 GB of disk in `%USERPROFILE%\GenFill-LocalAI` (deliberately outside OneDrive),
-- internet for this one-time download only.
+| Setting | Meaning |
+|---|---|
+| URL | Default `http://127.0.0.1:8188` (ComfyUI on this machine). Another machine on your network: `http://192.168.1.20:8188`. RunPod: `https://<pod-id>-8188.proxy.runpod.net`. Set by `GENFILL_COMFY_URL`, or `comfyui.url` in the config file |
+| Token | Optional. Sent as `Authorization: Bearer <token>` for servers behind a reverse proxy. `GENFILL_COMFY_TOKEN` |
+| Workflow folders | Shown read-only in the dialog; set them with `GENFILL_COMFY_WORKFLOWS` or `comfyui.workflow_dirs` in `config.json`. The bundled folder comes first, then `comfyui.workflow_dirs`, then the folders in `GENFILL_COMFY_WORKFLOWS` (a list separated by `;` on Windows, `:` elsewhere). Later folders override earlier ones with the same workflow id, so a studio can replace a shipped workflow |
 
-It builds a private Python 3.12 with CUDA PyTorch (it never touches Nuke's Python), installs
-diffusers/transformers, downloads the models and runs a GPU self-test. If anything later goes
-wrong (a driver update, a moved folder), run **Install / Repair** again: it only redoes what's
-broken.
+The dialog has a **Test connection** button. Pick **ComfyUI** in the Model menu on the node; the
+version menu lists every usable workflow, and a workflow that cannot load shows as "Not usable"
+with the reason.
 
-The model size is picked from your VRAM and can be changed in the dialog:
+**Upgrading.** GenFill 0.9 removed the built-in local model (its ~25 GB, Windows-only installer
+and helper process); ComfyUI replaces it. Nodes that were set to the old local model switch to
+ComfyUI automatically the next time they load. The old helper folder in your user profile is no
+longer used and can be deleted (see the [CHANGELOG](CHANGELOG.md)).
 
-| Size | FLUX.1 Fill model | For |
+#### Model files for the shipped workflows
+
+The workflows are listed in
+[nuke/workflows/comfyui/README.md](nuke/workflows/comfyui/README.md). Put the model files into
+the folders of the ComfyUI that runs them (on RunPod: the pod's ComfyUI folder).
+
+| Workflow | Needs |
+|---|---|
+| `flux_fill`, `flux_fill_erase` (default `flux_fill`) | `flux1-fill-dev.safetensors` in `models/diffusion_models/`, `clip_l.safetensors` and `t5xxl_fp8_e4m3fn.safetensors` in `models/text_encoders/`, `ae.safetensors` in `models/vae/`. `flux1-fill-dev` is gated on Hugging Face (black-forest-labs/FLUX.1-Fill-dev): accept the license first. **Non-commercial license** |
+| `api_flux_pro_fill`, `api_flux_erase`, `api_bria_genfill`, `api_bria_eraser`, `api_recraft_inpaint` | No model files. These use Comfy API nodes (partner models) and bill your Comfy.org account: set `COMFY_API_KEY` (the same key as Comfy Cloud) or add it under API Keys & Accounts |
+
+#### Your own workflows
+
+Export a graph from ComfyUI with **Workflow > Export (API)**, title its input and output nodes
+and drop it into a workflow folder. GenFill finds the nodes by title (case-insensitive):
+
+| Node title | Node | Purpose |
 |---|---|---|
-| Standard (Q4_K_S) | 6.8 GB | 12 GB GPUs alongside Nuke (default on a 3080 Ti) |
-| High (Q6_K) | 9.9 GB | 16 GB+ |
-| Maximum (Q8_0) | 12.7 GB | 24 GB |
+| `GenFill Image` | `LoadImage` | the plate crop (required) |
+| `GenFill Mask` | `LoadImageMask` (channel red, white = fill) or `LoadImage` (mask from alpha) | the mask (required) |
+| `GenFill Prompt` | node with a `text` / `prompt` / `value` / `string` input | the prompt |
+| `GenFill Negative` | same | the negative prompt (optional) |
+| `GenFill Seed` | node with `seed` / `noise_seed` / `value` | without one, every `seed` / `noise_seed` input gets the seed |
+| `GenFill Output` | `SaveImage` / `PreviewImage` | the result to read; without one, every `SaveImage` |
+
+An optional `<id>.genfill.json` next to the workflow sets the label, the crop size, and the
+erase partner used for an empty prompt. The full format and the sidecar keys are in
+[nuke/workflows/comfyui/README.md](nuke/workflows/comfyui/README.md).
 
 ### 3. Cloud keys and accounts (optional)
 
@@ -111,7 +140,10 @@ them per shot (e.g. `os.environ["SHOT"] = "sh020"` in an open-script callback) n
 
 | Variable | Meaning |
 |---|---|
-| `STABILITY_API_KEY`, `OPENAI_API_KEY`, `FAL_KEY`, `COMFY_API_KEY` | API keys. They win over keys saved in the dialog. Magnific and Higgsfield have no API keys (browser sign-in only) |
+| `STABILITY_API_KEY`, `OPENAI_API_KEY`, `FAL_KEY`, `COMFY_API_KEY` | API keys (`COMFY_API_KEY` also pays for ComfyUI workflows that use Comfy API nodes). They win over keys saved in the dialog. Magnific and Higgsfield have no API keys (browser sign-in only) |
+| `GENFILL_COMFY_URL` | ComfyUI server URL. Wins over the URL saved in the dialog |
+| `GENFILL_COMFY_TOKEN` | Bearer token for a protected ComfyUI server |
+| `GENFILL_COMFY_WORKFLOWS` | Extra ComfyUI workflow folders, separated by `;` on Windows and `:` elsewhere. Added after the bundled folder and `comfyui.workflow_dirs`; a later folder wins on the same workflow id |
 | `GENFILL_CACHE` | Root folder for results. Used unless the node's *cache folder* knob is set |
 | `GENFILL_NAME` | Name of each generation's folder. Default `g{gen:03d}_{date}-{time}` |
 | `GENFILL_VARIATION_NAME` | File name of each variation (without extension). Default `var_{var:02d}` |
@@ -167,7 +199,7 @@ shows which build is loaded.
 2. With its panel open, the Roto tools are in the Viewer. Draw around what you want to replace.
    Edit, toggle or animate shapes in the **shapes** list right in the panel.
 3. Type a prompt (*"a weathered wooden bench"*) or leave it empty to remove the object. Press
-   **Generate** (or Enter).
+   **Generate** (or Ctrl+Enter, Cmd+Enter on macOS; Enter adds a line).
 4. Click thumbnails or use ‹ › to pick a variation. Generate again to add more.
 5. Adjust **expand** / **feather** to blend, and set **output** to *Comp* or *Layer*.
 
@@ -191,8 +223,10 @@ Source ── GenerativeFill ── output
 
 | Control | Meaning |
 |---|---|
-| Prompt bar + **Generate** | What to generate. Empty = remove. Enter generates |
-| Model menu / ⚙ Local AI... | Backend picker and the local AI manager |
+| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Model menu | Backend picker (ComfyUI, cloud providers), and the version menu with the backend's models. *Refresh model list…* at its end fetches the provider's newest models (see [Newer models](#newer-models-discovery)) |
+| Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
+| Cost line (under Generate) | What the next Generate costs with the current model, resolution, quality and number of variations, plus the credit balance where the provider has one: "30 credits for 3 · balance 243,317 (Premium+)", "≈ $0.58 for 3", "free (your GPU)". "≈" marks an estimate. See [Costs and balance](#costs-and-balance) |
 | Variations | Thumbnails of every generation; ‹ › to browse; right-click for reuse prompt / reveal / delete |
 | **selection from** | *Shapes (built-in Roto)* (default), *Mask input*, or *Source alpha* |
 | **✏ Draw Selection** | Switches to Shapes and makes sure the Roto tools are in the Viewer |
@@ -206,10 +240,11 @@ Source ── GenerativeFill ── output
 | Knob | Meaning |
 |---|---|
 | model / model version | Backend, and the model of a cloud backend: pick from the version menu next to *Model* (empty = default) or type any id the provider accepts (e.g. `gpt-image-1.5`) |
-| quality | Speed vs quality (local: number of steps; OpenAI: quality level) |
+| quality | Speed vs quality, passed to models that offer it: GPT Image (OpenAI, fal.ai, Magnific, Higgsfield), Ideogram 4.5 (fal.ai, Magnific, Higgsfield), Higgsfield Hazel and Grok Image 2.0. *auto* = the model's default. Other models and ComfyUI workflows ignore it |
+| **resolution** | Processing resolution: the size the crop is sent to the model at. *auto* (default) = each model's usual size (about 1 megapixel). *1K / 2K / 4K* = about 1, 4 or 16 megapixels in the crop's aspect. Never more pixels than the crop has in the plate (a smaller crop goes at its own size). A model that can't go that high runs at its largest size and the panel says so ("model max 2K"); fixed-size models (Stability, Kontext, ...) ignore it. Providers with a resolution option get the matching value. Higher costs more |
 | variations | Variations per click (default 3, like Photoshop) |
 | seed | 0 = new random seed each click |
-| negative prompt | Things to avoid (Stability) |
+| negative prompt | Things to avoid, multi-line (Stability, and ComfyUI workflows with a `GenFill Negative` node) |
 | context | How much surrounding image the model sees, as a fraction of the selection size (default 0.35) |
 | min region | Smallest crop sent, in plate pixels (default 512) |
 | **color pipeline** | How the plate is encoded for the model. See [Color science](#color-science-a-linear-pipeline-with-display-referred-models) |
@@ -222,11 +257,14 @@ Source ── GenerativeFill ── output
 
 1. The selection is probed at low resolution to find its bounds (works for any matte).
 2. A **context crop** is chosen like Photoshop does: the selection plus a band of surroundings,
-   at an aspect ratio and resolution the model likes, so nothing gets stretched.
-3. The crop is **encoded** for the model (next section) and written as a 32-bit float TIFF
-   (local) or 8-bit PNG (cloud), together with the mask.
-4. The model generates N variations. Locally this happens in a hidden helper process; the
-   panel shows progress and Cancel.
+   at an aspect ratio the model likes, so nothing gets stretched. Its size comes from
+   **resolution**: *auto* uses the model's usual size (about 1 megapixel), *1K / 2K / 4K* about
+   1, 4 or 16 megapixels, capped at the crop's own pixel count and at the model's maximum. Nuke
+   resizes the crop to that size on the way out and the result back to the crop on the way in.
+3. The crop is **encoded** for the model (next section) and written as an 8-bit PNG, together
+   with the mask.
+4. The model generates N variations. With ComfyUI, GenFill uploads the crop, queues one graph
+   per variation and polls until they finish; the panel shows progress and Cancel.
 5. Each result is read back raw, **decoded** with the exact inverse, placed back at the crop's
    position and blended through the expanded, feathered selection.
 
@@ -239,14 +277,13 @@ variation restores it exactly, even if you've changed the selection or color set
 
 | Model | Good at | Notes |
 |---|---|---|
-| **Local: FLUX.1 Fill [dev]** (default) | High-quality fills, adding objects; free, offline | Your NVIDIA GPU, a hidden helper process (no windows, no ComfyUI). Float in, float out. **Non-commercial license** |
-| Local removal (empty prompt) | Clean plates | Variation 1 is **LaMa** (fast, faithful); later variations run FLUX.1 Fill from the LaMa result at strength 0.8 for natural texture |
+| **ComfyUI** (default) | Any workflow you can build in ComfyUI. Shipped: FLUX.1 Fill [dev] (default), plus Comfy API workflows (FLUX Pro Fill, Bria, Recraft) | Your ComfyUI server: this machine, the network or RunPod. Free with local models (**FLUX.1 Fill [dev] is non-commercial**); Comfy API workflows bill your Comfy.org account. Empty prompt = the workflow's erase partner. Results come back as 8-bit PNG |
 | Stability AI | Masked inpainting; *Erase* for removal | Cloud, paid. 8-bit |
 | OpenAI GPT Image | Prompt following | Cloud, paid. Re-renders the crop; GenFill composites it back through the mask. 8-bit |
-| fal.ai | One key, many models: FLUX.1 Fill [pro] (default), Ideogram, GPT Image 2, Qwen, Bria, OneReward; reference edits | Cloud, paid. Empty prompt runs FLUX Erase. Mask inpainting at the crop's size. 8-bit |
-| Magnific | Pixel-preserving *Retouch* (default Retouch Auto) plus reference-edit models | Cloud, Magnific credits, sign-in. Empty prompt = erase. 8-bit |
-| Higgsfield | Reference edits (GPT Image 2.5 default, Nano Banana, Seedream, FLUX, Ideogram) | Cloud, Higgsfield credits, sign-in. Re-renders the crop; GenFill composites it back. Ignores the mask. Empty prompt = a "remove it" instruction. 8-bit |
-| Comfy Cloud | Mask inpainting (Flux Pro Fill default, Bria GenFill, Recraft) and partner edit models | Cloud, Comfy credits, API key or sign-in. Empty prompt = Flux Erase / Bria Eraser. 8-bit |
+| fal.ai | One key, many models: FLUX.1 Fill [pro] (default), Ideogram 3 / 4.5, GPT Image 2 / 2.5, Qwen, Bria, OneReward; reference edits (Nano Banana, FLUX.3, Seedream, Grok) | Cloud, paid. Empty prompt runs FLUX Erase. Mask inpainting at the crop's size. 8-bit |
+| Magnific | Pixel-preserving *Retouch* (default Retouch Auto, also with Nano Banana, GPT, Ideogram and Seedream) plus reference-edit models (GPT 2 / 2.5, Nano Banana, Flux.2, Seedream, ...) | Cloud, Magnific credits, sign-in. Empty prompt = erase. 8-bit |
+| Higgsfield | Reference edits (GPT Image 2.5 default, Hazel, Nano Banana, Seedream, FLUX, Ideogram, Grok, Kling) | Cloud, Higgsfield credits, sign-in. Re-renders the crop; GenFill composites it back. Ignores the mask. Empty prompt = a "remove it" instruction. 8-bit |
+| Comfy Cloud | Mask inpainting (Flux Pro Fill default, Bria GenFill, Recraft, GPT Image 2.5, Ideogram V3) and partner edit models (Flux Kontext / 2, Nano Banana, Qwen, Grok) | Cloud, Comfy credits, API key or sign-in. Empty prompt = Flux Erase / Bria Eraser. 8-bit |
 | Offline Preview | Testing the pipeline | No AI; smears surrounding color into the selection |
 
 ### Cloud models and the version menu
@@ -258,36 +295,79 @@ the backend's default; you can also type any model id the provider accepts.
 - **Edit** models see only the crop and an instruction. They re-render the whole crop and
   GenFill composites the result back through the expanded, feathered selection.
 
-| Backend | Default | Inpaint / erase | Edit |
+Curated models (menu labels; the exact ids are in each backend's catalogue in
+`nuke/python/genfill/backends/`). "/" lists the versions of one family:
+
+| Backend | Default | Inpaint / erase (mask) | Edit (reference) |
 |---|---|---|---|
-| fal.ai | `fal-ai/flux-pro/v1/fill` | `fal-ai/flux-pro/v1/fill`, `fal-ai/flux-pro/v1/erase`, `fal-ai/ideogram/v3/edit`, `openai/gpt-image-2/edit`, `fal-ai/qwen-image-edit/inpaint`, `fal-ai/flux-lora-fill`, `fal-ai/onereward`, `fal-ai/bria/genfill`, `fal-ai/finegrain-eraser/mask` | `fal-ai/nano-banana-pro/edit`, `blackforestlabs/flux-3/edit-image`, `bytedance/seedream/v5/pro/edit` |
-| Magnific | `retouch-auto` | `retouch-auto`, `retouch-pro`, `retouch-classic`, `retouch-imagen-nano-banana-2-flash`, `retouch-imagen-nano-banana-2`, `retouch-inpaint-lab-nano-banana-2-flash`, `retouch-inpaint-lab-nano-banana-pro`, `retouch-inpaint-lab-seedream-5-pro`, `retouch-erase` | `seedream-5-pro`, `imagen-nano-banana-2-flash`, `imagen-nano-banana-2`, `imagen-nano-banana-2-lite`, `gpt-2`, `flux-kontext`, `flux-kontext-high`, `flux-2`, `seedream-4-5` |
-| Higgsfield | `gpt_image_2_5` | none (the server rejects masks) | `gpt_image_2_5`, `gpt_image_2`, `nano_banana_2_1`, `nano_banana_2`, `nano_banana_2_lite`, `nano_banana_pro`, `nano_banana`, `ideogram_4_5`, `seedream_v5_pro`, `seedream_5_0_flash`, `seedream_v5_lite`, `seedream_v4_5`, `flux_kontext`, `flux_2`, `flux_3_image` |
-| Comfy Cloud | `flux-pro-fill` | `flux-pro-fill`, `flux-erase`, `bria-genfill`, `bria-eraser`, `recraft-inpaint` | `flux-kontext-pro`, `flux-kontext-max`, `flux-2-pro`, `nano-banana-2`, `nano-banana-2-lite`, `nano-banana-pro`, `qwen-image-3` |
+| fal.ai | FLUX.1 Fill [pro] (`fal-ai/flux-pro/v1/fill`) | FLUX.1 Fill [pro] with FLUX Erase, FLUX.1 Fill [dev], Ideogram v3 / 4.5 Edit, GPT Image 2 / 2.5 Flare / 2.5 Sunburst, Qwen Image Edit Inpaint, OneReward, Bria GenFill, Finegrain Eraser | Nano Banana 2 / 2.1 / Pro, FLUX.3 Edit, Seedream 5 Pro / Flash / Lite, Grok Imagine 2.0 |
+| Magnific | Retouch Auto (`retouch-auto`) | Retouch Auto / Pro / Classic / Erase; Retouch with Nano Banana 2 / 2.1 / Pro, GPT 2 / 2.5, Ideogram 4.5 and Seedream 5 Pro (beta *Inpaint Lab* and *Precise* variants) | GPT 2 / 2.5, Ideogram 4.5, Nano Banana 2 / 2 Lite / 2.1 / Pro, Seedream 4.5 / 5 Pro / Lite / Flash, Flux.1 Kontext Pro / Max, Flux.2 Pro / Max / Flex, Flux.3, Qwen Image 3.0 Pro |
+| Higgsfield | GPT Image 2.5 (`gpt_image_2_5`) | none (the server rejects masks) | GPT Image 2 / 2.5, OpenAI Hazel, Nano Banana / 2 / 2 Lite / 2.1 / Pro, Ideogram 4.5, Seedream 4.5 / 5 Pro / Flash / Lite, FLUX Kontext / FLUX.2 / FLUX.3, Grok Image / 2.0, Kling O1 Image |
+| Comfy Cloud | Flux Pro Fill (`flux-pro-fill`) | Flux Pro Fill with Flux Erase, Bria GenFill with Bria Eraser, Recraft Inpaint, GPT Image 2.5 Flare / Sunburst, Ideogram V3 Edit | Flux Kontext Pro / Max, Flux 2 Pro / Max, Nano Banana 2 / 2 Lite / Pro, Qwen Image 3, Grok Imagine Image 2.0 |
 
 Hover an entry in the menu for its note (cost, strengths). Magnific was verified end to end
 against the live service through GenFill's own code (browser sign-in, upload, Retouch erase,
 download). The other new backends are covered by unit tests with mocked services.
 
-### How the local AI runs
+**Unverified (not yet checked against the live services):** the mask polarity of Comfy Cloud
+GPT Image 2.5 and Ideogram V3 Edit and of fal Ideogram 4.5 Edit (GenFill inverts the mask for
+fal Ideogram 4.5); whether Comfy Cloud passes the resolution / size setting through to its
+partner models; the response formats of fal's pricing API and Stability's balance endpoint.
+If a fill changes the area *outside* the selection, or the result size doesn't match the
+resolution, please report it. Higgsfield mask inpainting stays off on purpose: its server
+rejects the mask role (checked 2026-10-15).
+
+### Newer models (discovery)
+
+The version menu also lists models Magnific, Higgsfield and fal.ai added after this release.
+GenFill fetches each provider's model list in the background once a day (Magnific and
+Higgsfield need a sign-in, fal.ai needs no key), or right away with **Refresh model list…** at
+the end of the menu. Discovered entries are marked **(new)**; curated entries keep their tuned
+settings, and a discovered model only adds an id the curated list doesn't have. A failed or
+empty fetch keeps the previous list. The list is cached in `~/.nuke/genfill/models_cache.json`
+(model metadata only, never keys) and is refreshed after 24 hours. Discovery never runs on
+Generate.
+
+### Costs and balance
+
+The panel's cost line is refreshed in the background (about half a second after you change
+model, version, resolution, quality or variations; quotes are cached for 5 minutes, the balance
+for 60 seconds and after every generation). It never asks you to sign in and Generate never
+waits for it. Quotes use the size the next Generate sends (last selection, else the plate).
+
+| Backend | Cost shown | Balance |
+|---|---|---|
+| Magnific | Exact credits from Magnific's own cost preview for the request GenFill would send (Retouch: one call per variation) | Credits available and plan |
+| Higgsfield | Credits from Higgsfield's cost preview for one image, times the variations ("≈" for more than one) | Credits and plan |
+| Comfy Cloud | Mask models (Flux Fill, Bria, Recraft): Comfy's credit estimate of the graph. Partner models: "billed in Comfy credits" (Comfy can't price them in advance) | none (Comfy has no balance query) |
+| ComfyUI | "free (your GPU)"; workflows with Comfy API nodes: "Comfy credits (API nodes)" | none |
+| fal.ai | USD from fal's pricing API with your key; without an answer, fal's published prices for some models; otherwise "cost unknown" | none (needs an admin key) |
+| OpenAI | ≈ USD from OpenAI's per-token image prices (auto quality counted as high) | none (needs an admin key) |
+| Stability AI | ≈ 5 credits ($0.05) per variation | Credits, if Stability's balance endpoint answers |
+| Offline Preview | free | none |
+
+"sign in to see cost" means the provider needs a sign-in first (API Keys & Accounts...);
+"cost unknown" means the provider gave no price for this model (newly discovered models often
+have none). Providers bill the actual usage; their price lists can change.
+
+### How ComfyUI runs
 
 ```
-Nuke (GenFill plugin)                          %USERPROFILE%\GenFill-LocalAI\
-  backends/local.py                              env\  private Python 3.12 + CUDA PyTorch
-  localai/client.py ── JSON over a private ──▶   localai/worker.py  (hidden helper)
-                       stdin/stdout pipe           FLUX.1 Fill [dev] GGUF (diffusers)
-                                                   T5-XXL + CLIP-L text encoders, FLUX VAE
-                                                   LaMa (TorchScript)
+Nuke (GenFill plugin)                         ComfyUI server (local, LAN or RunPod)
+  backends/comfyui.py                           POST /upload/image   crop + mask
+  backends/comfy_workflows.py  ── HTTP ──────▶  POST /prompt         one patched graph per variation
+  (finds nodes by title,                        GET  /history/<id>   poll until finished
+   patches image, mask, prompt, seed)           GET  /view           download the PNGs
 ```
 
-- PyTorch and ~10 GB of weights never load into Nuke. A crash or out-of-memory error becomes an
-  error in the panel; Nuke and your script stay alive, and PyTorch's CUDA libraries can't clash
-  with Nuke's (CopyCat, Cattery).
-- The helper starts on the first local generation and keeps the model loaded between
-  generations. It exits when Nuke closes, after 10 idle minutes, or on **Local AI > Stop AI Helper**.
-- To fit 12 GB, the FLUX model stays on the GPU and the 9.5 GB T5 encoder is loaded only while
-  a new prompt is encoded (prompt encodings are cached). The first generation after the helper starts
-  takes longer while the models load.
+- GenFill loads the workflow's API-format graph, points `GenFill Image` and `GenFill Mask` at the
+  uploaded files, sets the prompt and gives each variation its own seed (`seed + i`).
+- Nothing heavy runs inside Nuke. A crash or out-of-memory error on the server becomes an error
+  in the panel; Nuke and your script stay alive.
+- Cancel (or a timeout) removes the queued jobs from the server and interrupts the running one.
+- Variations are queued together, so on a busy server the panel shows your position in the
+  ComfyUI queue.
+- A variation that fails does not discard the ones that finished.
 
 ---
 
@@ -343,7 +423,7 @@ In Nuke this is built from native nodes inside the Group, so it renders on the f
 GenFill:
 
 ```
-Source ─ Crop ─ Reformat ─ [to_model:   Expression (ACEScct) | OCIOColorSpace | none] ─ Write  (float TIFF, raw)
+Source ─ Crop ─ Reformat ─ [to_model:   Expression (ACEScct) | OCIOColorSpace | none] ─ Write  (8-bit PNG, raw)
                                                                                          │
                                                                                        model
                                                                                          │
@@ -374,9 +454,10 @@ Things to know:
 
 - **The inverse is steep at the top.** The tone curve squeezes a huge range of highlight
   values into the last few percent of 0..1, so the inverse stretches that region back out.
-  A tiny difference near display white becomes a large difference in linear. This is why GenFill
-  sends **float** to the local model: with 8-bit files, each step near white becomes a big jump in
-  linear, which shows up as banding and posterized highlights after the inverse.
+  A tiny difference near display white becomes a large difference in linear. With the 8-bit
+  PNGs that every backend returns, each step near white becomes a big jump in linear, which can
+  show up as banding and posterized highlights after the inverse (see
+  [Precision](#precision-why-8-bit-results-need-care)).
 - **There's a ceiling.** Display white (1.0) decodes to the display transform's maximum
   scene value. Anything brighter in the plate is clamped to that maximum inside the fill. Pixels
   outside the selection are untouched.
@@ -449,36 +530,25 @@ The decision is logged with each generation, e.g.
 color: plate Read Read1 (colorspace 'ACES - ACES2065-1', .exr) -> display: Output - Rec.709 (auto: ACES - ACES2065-1 is scene-linear)
 ```
 
-### Precision: why float transport matters
+### Precision: why 8-bit results need care
 
 Encoding solves the *range* problem. Bit depth decides how *finely* that range is sampled, and
 any quantization is magnified by the inverse transfer:
 
 | Transport | ACEScct: linear change per code value | Result after decode |
 |---|---|---|
-| 8-bit PNG | ×1.049 (**4.9 %** per step) | Visible banding in skies and soft gradients |
+| **8-bit PNG** (every backend, including ComfyUI) | ×1.049 (**4.9 %** per step) | Can show banding in skies and soft gradients |
 | 16-bit | ×1.0002 (0.019 % per step) | Smooth |
-| **32-bit float TIFF** (local) | No file quantization | Smooth; the model's own output is the only limit |
 
 The display transform's inverse is steeper still near white, so 8-bit is worse there.
 
-So the local path is float end to end:
+GenFill 0.9 removed the float TIFF path of the old built-in local model: the crop goes to the
+model and the result comes back as an 8-bit PNG, locally or in the cloud. The colour pipeline
+(encode, generate, decode) is unchanged. To keep banding down:
 
-1. Nuke writes the encoded crop as a **32-bit float TIFF** (uncompressed, raw).
-2. The helper loads it with `tifffile` as float32. The only clamp in the whole pipeline is
-   here: the model's input is limited to 0..1 *in encoded space*, which in ACEScct means
-   linear −0.0069..222.86, and in display mode means the display transform's range.
-3. FLUX's output is taken as float (`output_type="np"`), never rounded to 8 bits, and written
-   back as a float TIFF. An 8-bit preview PNG is made separately for the thumbnails.
-4. Nuke reads it raw and applies the inverse.
-
-To be clear about the limit: FLUX computes in bfloat16 inside a VAE latent, so the
-generated pixels carry the model's own precision. That precision shows up as fine,
-spatially-varying noise rather than banding, and it's far below grain level. Float transport
-makes sure GenFill adds no quantization of its own on top.
-
-Cloud models only accept 8-bit PNG. They use the same encoding, just quantized, so prefer the
-local model for HDR plates.
+- For highlight-heavy fills use **Log (ACEScct)**: the display transform's inverse is steeper
+  near white, so 8-bit steps hurt more there. Check skies and soft gradients after decoding.
+- Regrain or add a little noise over the fill: grain hides the 8-bit steps.
 
 ### What this does and doesn't give you
 
@@ -500,15 +570,13 @@ local model for HDR plates.
 
 ## Privacy and security
 
-**Local models run entirely on your machine.** The crop, mask, prompt and results go from Nuke to
-the hidden helper over a private pipe and are processed on your GPU. The helper makes no network
-connections: it runs with Hugging Face offline mode on and telemetry off, and reads model files
-only from `%USERPROFILE%\GenFill-LocalAI`. You can confirm this by blocking
-`GenFill-LocalAI\python\...\python.exe` in Windows Firewall; generation keeps working.
-
-The network is used only by the **installer**, and only to download uv (GitHub), Python packages
-(PyPI and the official PyTorch index) and model files (Hugging Face, GitHub). Nothing about your
-images or prompts is sent.
+**ComfyUI runs where you point it.** GenFill sends the crop around your selection (not the whole
+frame), its mask and the prompt to the ComfyUI server in the URL setting, over HTTP. With the
+default `http://127.0.0.1:8188` and local model files nothing leaves your machine. A server on your
+network or on RunPod receives them, so use HTTPS (the RunPod proxy URL is HTTPS) and a token when the
+server is not on a trusted network. Workflows that use Comfy API nodes additionally send the
+crop, mask and prompt through ComfyUI to the partner (Black Forest Labs, Bria, Recraft) and bill your
+Comfy.org account (`COMFY_API_KEY`).
 
 **Cloud models (Stability AI, OpenAI, fal.ai, Magnific, Higgsfield, Comfy Cloud) are
 different:** the crop around your selection (not the whole frame), its mask and the prompt are
@@ -524,8 +592,8 @@ uploaded to that company. Use them only when your client / TPN rules allow it.
 |---|---|
 | Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved), or where `GENFILL_CACHE` points. If scripts live in OneDrive/Dropbox this syncs; set **cache folder** or `GENFILL_CACHE` to keep it local |
 | GenFill log (includes prompts) | `test_output\genfill.log` when installed from the repo, else `~\.nuke\genfill\genfill.log` |
-| Helper / installer logs | `%USERPROFILE%\GenFill-LocalAI\logs\` |
-| API keys and sign-in tokens (cloud only) | `~\.nuke\genfill\config.json`, never in .nk scripts. Sign out removes the tokens |
+| API keys, the ComfyUI URL and token, sign-in tokens | `~\.nuke\genfill\config.json`, never in .nk scripts. Sign out removes the tokens |
+| Discovered model lists | `~\.nuke\genfill\models_cache.json` (model metadata only; delete it to start over) |
 
 ---
 
@@ -536,19 +604,21 @@ uploaded to that company. Use them only when your client / TPN rules allow it.
 | No Roto tools in the Viewer | Open the GenerativeFill panel (it must stay open while drawing) with *selection from* = Shapes, and view the node. Click **✏ Draw Selection** if needed |
 | "Nothing is selected yet" | Draw a shape, or connect a matte / switch *selection from* |
 | "The selection is empty on frame N" | The shapes are hidden or keyed off on this frame, or the matte is black here |
-| Stuck on "Starting the local AI..." / helper errors | **Local AI > Install / Repair...**, then check `GenFill-LocalAI\logs\helper.log` |
-| `WinError 1114` (c10.dll) | Run **Install / Repair** (restores the private C++ runtime next to PyTorch) |
-| `os error 1455` / paging file too small | Run **Install / Repair** (reshards T5); keep a few GB of free disk for the Windows page file |
-| Out of GPU memory | Close other GPU apps (Nuke's own GPU cache counts), or choose the Standard model size |
+| "Cannot reach ComfyUI at ..." | ComfyUI is not running, or the URL is wrong. Start ComfyUI, then check **API Keys & Accounts > ComfyUI > Test connection**. On RunPod use `https://<pod-id>-8188.proxy.runpod.net` and wait until the pod's ComfyUI has finished starting. A 401/403 means the server wants a token (`GENFILL_COMFY_TOKEN`) |
+| "The server has no file '...' for ... Loader" (model missing) | The workflow needs a model file ComfyUI doesn't have. Put it into the folder named in the message (`models/diffusion_models`, `models/text_encoders`, `models/vae`, `models/checkpoints`, ...) of the ComfyUI that runs the job, refresh ComfyUI, or pick another workflow. The per-workflow file list is in [Install](#2-comfyui-optional-recommended) |
+| "Not usable: ..." in the model list, or "Unknown ComfyUI workflow" | The workflow file or its sidecar is broken, or its folder isn't listed. Check the node titles against the [title convention](#your-own-workflows) and `GENFILL_COMFY_WORKFLOWS` / `comfyui.workflow_dirs` |
+| "uses Comfy API nodes and needs a Comfy account key" | Set `COMFY_API_KEY` (starts with `comfyui-`) or add it under **API Keys & Accounts** |
+| "Waiting in the ComfyUI queue" for long | Another job is ahead of you on the server. Wait, or cancel and try again |
+| Out of GPU memory | An error from the ComfyUI server. Close other GPU apps there (Nuke's own GPU cache counts on the same machine), or use a workflow with a smaller model or crop size (`pixels` in its sidecar) |
 | Sign-in doesn't finish | Port 47321-47328 on `127.0.0.1` must be free (a firewall or other program may hold it). Finish in the browser within 5 minutes, then Generate (or Sign in) again |
 | "Not signed in" | Use **Sign in** in *API Keys & Accounts*, or just click Generate and finish in the browser |
 | Credits / payment error from a cloud provider | Top up or check the plan on the provider's site; or switch to a cheaper model in the version menu |
 | Higgsfield ignores the mask / changes more than the selection | Higgsfield offers edit models only: they re-render the crop and GenFill blends back through the selection. Use Magnific, Comfy Cloud or fal.ai for true mask inpainting |
 | Fill looks washed out | You're probably on *Log (ACEScct)*; try *Display transform* |
-| Banding in bright fills | Use the local model (float); cloud models are 8-bit |
+| Banding in bright fills | Results are 8-bit PNGs; see [Precision](#precision-why-8-bit-results-need-care). Regrain the fill |
 | Bright highlights flatten inside the fill | Display transform ceiling; use *Log (ACEScct)* for that shot |
 
-Send `test_output\genfill.log` and the helper log with any bug report.
+Send `test_output\genfill.log` with any bug report.
 
 ---
 
@@ -557,7 +627,7 @@ Send `test_output\genfill.log` and the helper log with any bug report.
 - Track-and-apply: stick a still fill to a moving plate via a tracker / CornerPin.
 - Grain matching on the generated patch.
 - Reference image input, like Photoshop's "Reference image".
-- A commercially licensed local model (e.g. Qwen-Image-Edit, Apache 2.0).
+- A commercially licensed local workflow (e.g. Qwen-Image-Edit, Apache 2.0).
 - Adobe Firefly Fill for studios with Firefly Services access.
 - Anamorphic plates (pixel aspect is currently ignored when building the crop).
 
@@ -578,13 +648,14 @@ nuke/                       <- add this folder to NUKE_PATH (or use installers\i
     config.py, log.py       keys, cache and naming settings, logging
     naming.py               cache folder and file name patterns (pure Python)
     devtools.py             Reload GenFill, in-Nuke smoke test
-    backends/               local.py, stability.py, openai_images.py, fal.py, magnific.py,
-                            higgsfield.py, comfy_cloud.py (+ mcp.py, oauth.py, cloud.py), mock.py
-    localai/                installer.py, client.py (Nuke side), worker.py (hidden helper)
-    ui/                     Photoshop-style panel, Local AI dialog, API keys, Qt shim
-installers/                 install / dev install / uninstall / smoke test (Windows)
+    backends/               comfyui.py + comfy_workflows.py (ComfyUI server and its workflows),
+                            stability.py, openai_images.py, fal.py, magnific.py, higgsfield.py,
+                            comfy_cloud.py (+ mcp.py, oauth.py, cloud.py), mock.py
+    ui/                     Photoshop-style panel, API keys & ComfyUI settings, Qt shim
+  workflows/comfyui/        shipped ComfyUI workflows (<id>.json + <id>.genfill.json), README.md
+installers/                 install / dev install / uninstall / smoke test (Windows), live_check.py
 tests/                      stdlib unittest with a fake nuke module; runs without Nuke
-docs/ARCHITECTURE.md        internals: node graph, generate flow, helper, color
+docs/ARCHITECTURE.md        internals: node graph, generate flow, ComfyUI backend, color
 ```
 
 ```
@@ -599,10 +670,10 @@ generate → select → delete flow are tested with the offline backend. Interna
 
 ## Licenses
 
-- **FLUX.1 Fill [dev]**: [FLUX.1 [dev] Non-Commercial License](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/blob/main/LICENSE.md).
+- **FLUX.1 Fill [dev]** (used by the shipped `flux_fill` workflows; you download it yourself):
+  [FLUX.1 [dev] Non-Commercial License](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev/blob/main/LICENSE.md).
   The model may only be used non-commercially (personal, research, evaluation); read the license
-  for the terms on outputs before using them in paid work. GenFill downloads a community GGUF
-  quantization of it.
-- **LaMa**: Apache 2.0.
+  for the terms on outputs before using them in paid work.
 - T5 / CLIP text encoders: Apache 2.0 / MIT.
+- ComfyUI itself: GPL-3.0; other workflows bring their own model licenses.
 - Cloud backends: governed by your agreement with that provider.

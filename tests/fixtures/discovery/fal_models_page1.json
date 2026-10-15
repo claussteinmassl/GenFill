@@ -1,0 +1,114 @@
+{
+ "models": [
+  {
+   "endpoint_id": "fal-ai/nano-banana-pro/edit",
+   "metadata": {
+    "display_name": "Nano Banana Pro",
+    "category": "image-to-image",
+    "description": "Nano Banana Pro is Google's new state-of-the-art image generation and editing model",
+    "status": "active",
+    "tags": [
+     "realism",
+     "typography"
+    ],
+    "updated_at": "2026-06-18T17:13:56.639Z",
+    "group": {
+     "key": "Nano-Banana-Pro",
+     "label": "Image Editing"
+    }
+   }
+  },
+  {
+   "endpoint_id": "ideogram/v4.5/edit",
+   "metadata": {
+    "display_name": "Ideogram V4.5 Edit",
+    "category": "image-to-image",
+    "description": "Edit images with Ideogram 4.5: prompt edits with up to 4 reference images, optional mask, and a high-precision mode that keeps unchanged pixels intact.",
+    "status": "active",
+    "tags": [
+     "realism",
+     "typography",
+     "editing"
+    ],
+    "updated_at": "2026-10-02T22:48:46.859Z",
+    "group": {
+     "key": "ideogram45",
+     "label": "Edit Image"
+    }
+   }
+  },
+  {
+   "endpoint_id": "meta/muse-image/edit",
+   "metadata": {
+    "display_name": "Meta Muse Image Edit",
+    "category": "image-to-image",
+    "description": "Meta's Muse Image model does precise edits that change only what you ask, stay coherent across turns, and compose from multiple reference images.",
+    "status": "active",
+    "tags": [
+     "realism",
+     "typography",
+     "stylized",
+     "editing"
+    ],
+    "updated_at": "2026-08-26T23:18:56.367Z",
+    "group": {
+     "key": "meta-muse-image",
+     "label": "Image Editing"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/bria/background/remove",
+   "metadata": {
+    "display_name": "Bria RMBG 2.0",
+    "category": "image-to-image",
+    "description": "Bria RMBG 2.0 enables seamless removal of backgrounds from images, ideal for professional editing tasks. Trained exclusively on licensed data for safe and risk-free commercial use. Model weights for commercial use are available here: https://share-eu1.hsforms.com/2GLpEVQqJTI2Lj7AMYwgfIwf4e04",
+    "status": "active",
+    "tags": [
+     "background removal",
+     "image segmentation",
+     "high resolution",
+     "utility",
+     "rembg"
+    ],
+    "updated_at": "2026-10-12T11:45:35.437Z",
+    "group": {
+     "key": "bria",
+     "label": "Remove Background"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/flux-2/klein/9b/edit",
+   "metadata": {
+    "display_name": "FLUX.2 [klein] 9B",
+    "category": "image-to-image",
+    "description": "Image-to-image editing with FLUX.2 [klein] 9B from Black Forest Labs. Precise modifications using natural language descriptions and hex color control.",
+    "status": "active",
+    "tags": [],
+    "updated_at": "2026-03-17T15:26:34.088Z",
+    "group": {
+     "key": "klein",
+     "label": "9B Image Edit"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/flux-2/lora/edit",
+   "metadata": {
+    "display_name": "FLUX 2 Lora Edit",
+    "category": "image-to-image",
+    "description": "Image-to-image editing with LoRA support for FLUX.2 [dev] from Black Forest Labs. Specialized style transfer and domain-specific modifications.",
+    "status": "active",
+    "tags": [],
+    "updated_at": "2026-04-21T17:46:48.631Z",
+    "group": {
+     "key": "Flux2",
+     "label": "Image Editing LoRA"
+    }
+   }
+  }
+ ],
+ "next_cursor": "Mg",
+ "has_more": true
+}

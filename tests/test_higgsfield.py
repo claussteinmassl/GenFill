@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
 from genfill.backends import base, higgsfield  # noqa: E402
@@ -25,10 +27,11 @@ class FakeClient(object):
     def call_tool(self, name, args, timeout=None):
         self.calls.append((name, args))
         if name == "media_upload":
-            return {"uploads": [{"upload_url": "https://up/x?sig=1", "media_id": "m1",
+            mid = "m%d" % len(self.named("media_upload"))   # m1, m2, ...
+            return {"uploads": [{"upload_url": "https://up/x?sig=1", "media_id": mid,
                                  "content_type": "image/png"}]}
         if name == "media_confirm":
-            return {"results": [{"media_id": "m1", "status": "uploaded"}]}
+            return {"results": [{"media_id": args["media_ids"][0], "status": "uploaded"}]}
         if name == "generate_image_batch":
             if self.submit is not None:
                 return self.submit
@@ -114,6 +117,35 @@ class HiggsfieldTests(unittest.TestCase):
         self.assertEqual([r["params"]["seed"] for r in reqs], [7, 8])
         self.assertNotIn("quality", reqs[0]["params"])
 
+    def test_resolution_tiers(self):
+        b = self.backend
+        w, h = b.model_size(5000, 2800, "gpt_image_2_5", "2K")
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.03)
+        self.assertEqual(b.size_plan(5000, 2800, "kling_omni_image", "4K").note, "model max 2K")
+        self.assertEqual(b.size_plan(5000, 2800, "nano_banana", "2K").note, "fixed size")
+        self.assertEqual(b.model_size(5000, 2800, "nano_banana", "2K"),
+                         b.model_size(5000, 2800, "nano_banana"))
+        for model, res, sent in (("gpt_image_2_5", "2K", "2k"), ("gpt_image_2_5", "4K", "4k"),
+                                 ("gpt_image_2_5", "auto", "1k"),
+                                 ("kling_omni_image", "4K", "2k"),
+                                 ("nano_banana_2_lite", "4K", "1k"),
+                                 ("nano_banana", "4K", None)):
+            w, h = b.model_size(5000, 2800, model, res)
+            client = FakeClient([done("completed")])
+            self.run_generate(client, self.request(model=model, count=1, width=w, height=h,
+                                                   resolution=res))
+            p = client.named("generate_image_batch")[0]["requests"][0]["params"]
+            self.assertEqual(p.get("resolution"), sent, (model, res))
+
+    def test_discovered_resolution_tiers(self):
+        specs = higgsfield.explore_specs([{
+            "id": "x_model", "name": "X", "provider_name": "P", "description": "d",
+            "aspect_ratios": ["1:1", "16:9"],
+            "medias": [{"type": "image", "roles": ["image_references"]}],
+            "parameters": [{"name": "resolution", "options": ["1k", "1.5k", "2k"]}]}])
+        self.assertEqual(specs[0].extra["resolutions"], ("1K", "2K"))
+        self.assertEqual(specs[0].extra["resolution"], "1k")
+
     def test_wait_loop_until_terminal(self):
         pending = {"jobs": [], "all_terminal": False, "poll_after_seconds": 1,
                    "summary": {"completed": 0, "failed": 0}}
@@ -195,6 +227,60 @@ class HiggsfieldTests(unittest.TestCase):
             want = "image" if m.id == "gpt_image_2" else "image_references"
             self.assertEqual(m.extra["media_role"], want, m.id)
 
+    def test_mask_role_models_stay_reference_edits_until_live_tested(self):
+        self.assertFalse(higgsfield.MASK_ROLE_LIVE)
+        for mid in ("nano_banana_2", "nano_banana_2_1", "nano_banana_2_lite", "ideogram_4_5"):
+            spec = self.backend.model_spec(mid)
+            self.assertEqual((spec.kind, spec.extra["mask"]), ("edit", False), mid)
+        for mid in ("openai_hazel", "grok_image_2_0", "grok_image", "kling_omni_image"):
+            self.assertIn(mid, self.backend.model_ids())
+
+    def masked_backend(self, spec):
+        backend = higgsfield.HiggsfieldBackend()
+        backend.catalogue = (spec,)
+        return backend
+
+    def test_mask_media_for_mask_role_models(self):
+        spec = higgsfield._spec("nano_banana_2", "Nano Banana 2", higgsfield._CLASSIC,
+                                mask=True, inpaint_flag=True)
+        self.assertEqual(spec.kind, "inpaint")
+        with open(self.path, "wb") as fh:
+            fh.write(PNG + b"plate")
+        fd, mask_path = tempfile.mkstemp(suffix=".png")
+        os.write(fd, PNG + b"mask")
+        os.close(fd)
+        self.addCleanup(os.remove, mask_path)
+        self.backend = self.masked_backend(spec)
+        client = FakeClient([done("completed", "completed")])
+        out = self.run_generate(client, self.request(model="nano_banana_2", mask_path=mask_path,
+                                                     prompt=""))
+        self.assertEqual(len(out), 2)
+        uploads = client.named("media_upload")
+        self.assertEqual([u["filename"] for u in uploads],
+                         ["genfill_plate.png", "genfill_mask.png"])
+        self.assertEqual([c["media_ids"] for c in client.named("media_confirm")],
+                         [["m1"], ["m2"]])
+        self.assertEqual([c[0][1] for c in self.put.call_args_list],
+                         [PNG + b"plate", PNG + b"mask"])     # the RGB mask, white = fill
+        for r in client.named("generate_image_batch")[0]["requests"]:
+            p = r["params"]
+            self.assertEqual(p["medias"], [{"role": "image_references", "value": "m1"},
+                                           {"role": "mask", "value": "m2"}])
+            self.assertIs(p["is_inpaint"], True)
+            self.assertIn("masked area", p["prompt"])      # mask wording, not the ref wording
+
+    def test_mask_media_without_inpaint_flag(self):
+        spec = higgsfield._spec("ideogram_4_5", "Ideogram 4.5", higgsfield._IDEOGRAM,
+                                seed=True, quality={"high": "high"}, mask=True)
+        self.backend = self.masked_backend(spec)
+        client = FakeClient([done("completed")])
+        self.run_generate(client, self.request(model="ideogram_4_5", count=1, quality="high"))
+        p = client.named("generate_image_batch")[0]["requests"][0]["params"]
+        self.assertEqual([m["role"] for m in p["medias"]], ["image_references", "mask"])
+        self.assertNotIn("is_inpaint", p)
+        self.assertEqual((p["quality"], p["seed"]), ("high", 7))
+        self.assertTrue(p["prompt"].startswith("a red car Only change the masked area"))
+
     def test_seedream_never_picks_unsupported_ratio(self):
         for model in ("seedream_5_0_flash", "seedream_v5_lite", "seedream_v4_5"):
             ratios = self.backend.model_spec(model).extra["ratios"]
@@ -219,6 +305,80 @@ class HiggsfieldTests(unittest.TestCase):
                 a, b = (float(x) for x in got.split(":"))
                 self.assertLess(abs(mw / float(mh) - a / b) / (a / b), 0.03, (model, w, h))
         self.assertEqual(higgsfield.nearest_ratio(1168, 880, ["1:1", "4:3", "16:9"]), "4:3")
+
+
+class HiggsfieldCostTests(unittest.TestCase):
+    """get_cost preflight (count 1 x N) and balance; never a generation or upload."""
+
+    def setUp(self):
+        self.backend = higgsfield.HiggsfieldBackend()
+        higgsfield.HiggsfieldBackend._quotes_disabled = False
+        self.addCleanup(setattr, higgsfield.HiggsfieldBackend, "_quotes_disabled", False)
+
+    def quote(self, answer, **kw):
+        args = dict(image_path=None, mask_path=None, mask_alpha_path=None, prompt="a red car",
+                    width=1168, height=880, count=3, model="gpt_image_2_5", quality="medium",
+                    resolution="1K")
+        args.update(kw)
+        client = mock.Mock()
+        client.call_tool.return_value = answer
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            q = self.backend.estimate(GenerationRequest(**args), "")
+        names = [c[0][0] for c in client.call_tool.call_args_list]
+        self.assertEqual(names, ["generate_image"])
+        return q, client.call_tool.call_args_list[0][0][1]["params"]
+
+    def test_count_one_times_n(self):
+        q, params = self.quote({"cost": {"credits": 0.5, "credits_exact": 0.5}})
+        self.assertIs(params["get_cost"], True)
+        self.assertEqual(params["count"], 1)
+        self.assertEqual(params["model"], "gpt_image_2_5")
+        self.assertEqual(params["quality"], "medium")
+        self.assertEqual(params["resolution"], "1k")
+        self.assertEqual(params["aspect_ratio"], "4:3")
+        self.assertNotIn("medias", params)
+        self.assertEqual((q.amount, q.exact), (1.5, False))
+        self.assertEqual(q.text(), u"\u2248 1.5 credits for 3")
+
+    def test_single_image_is_exact(self):
+        q, _ = self.quote({"cost": {"credits": 2}}, count=1, model="nano_banana_2_1",
+                          resolution="2K", width=2048, height=1536)
+        self.assertEqual((q.amount, q.exact, q.text()), (2, True, "2 credits"))
+
+    def test_bad_answer_raises(self):
+        with self.assertRaises(BackendError):
+            self.quote({"message": "nope"})
+
+    def test_returned_jobs_disable_quotes(self):
+        with mock.patch("genfill.log.error") as err:
+            q, _ = self.quote({"result": {"jobs": [{"job_id": "j1", "status": "pending"}]}})
+        self.assertIsNone(q)                       # shown as "cost unknown"
+        err.assert_called_once()
+        self.assertTrue(higgsfield.HiggsfieldBackend._quotes_disabled)
+        client = mock.Mock()
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            self.assertIsNone(self.backend.estimate(
+                GenerationRequest(None, None, None, "x", 64, 64), ""))
+        client.call_tool.assert_not_called()       # no further quote calls this session
+        self.assertTrue(higgsfield._has_jobs({"job_id": "x"}))
+        self.assertFalse(higgsfield._has_jobs({"cost": {"credits": 1}}))
+
+    def test_generate_params_keep_medias(self):
+        spec = self.backend.model_spec("gpt_image_2_5")
+        req = GenerationRequest(None, None, None, "x", 1024, 1024)
+        p = self.backend._params(req, spec, "x", "m1", "1:1", 3)
+        self.assertEqual(p["medias"], [{"role": "image_references", "value": "m1"}])
+
+    def test_balance(self):
+        client = mock.Mock()
+        client.call_tool.return_value = {"credits": 143.97, "subscription_plan_type": "creator"}
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            b = self.backend.balance("")
+        self.assertEqual(b.text(), "balance 143.97 (Creator)")
+        client.call_tool.assert_called_once_with("balance", {})
 
 
 if __name__ == "__main__":

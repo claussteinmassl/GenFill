@@ -4,8 +4,10 @@
   empty prompt) run as ONE API-format graph: ``LoadImage`` + ``LoadImageMask`` feeding N fill
   nodes (consecutive seeds), each into its own ``SaveImage``. One job, one wait, one
   ``get_output``.
-* Partner edit models without a mask (Flux Kontext, Nano Banana, Qwen, Flux 2) go through
-  ``partner_generate`` with the plate as ``image`` media, one call per variation.
+* Partner models go through ``partner_generate``, one call per variation: edit models without a
+  mask (Flux Kontext, Nano Banana, Qwen, Flux 2, Grok) get the plate as ``image`` media; partner
+  mask models (GPT Image 2.5 via ``openai/images-generations``, Ideogram V3 edit via
+  ``ideogram/generate``) also get the GenFill mask (white = fill) as ``mask`` media.
 
 Files go up through ``upload_file``: the server hands back a single-use PUT URL (the file
 path is only templated into a curl command, the server never reads it), we PUT the bytes
@@ -30,7 +32,7 @@ import time
 from .base import (EDIT_EMPTY_PROMPT, BackendError, Cancelled, ModelSpec,
                    check_image, download)
 from .cloud import McpBackend, collect, finish, poll, put_bytes, ref_prompt
-from .. import region
+from .. import pricing, region
 
 MAX_SEED = 2147483646
 WAIT_SECONDS = 60          # per wait_for_job call
@@ -71,6 +73,44 @@ PARTNER_SLUGS = {
     "nano-banana-2-lite": "vertexai/nano-banana-2-lite",
     "nano-banana-pro": "vertexai/nano-banana-pro",
     "qwen-image-3": "qwen/qwen-image-3",
+    "flux-2-max": "bfl/flux-2-max",
+    "grok-image-edit": "xai/grok-image-edit",
+    "gpt-image-2.5-flare": "openai/images-generations",
+    "gpt-image-2.5-sunburst": "openai/images-generations",
+    "ideogram-v3-edit": "ideogram/generate",
+}
+
+# Resolution setting per model (unlisted: 1K only). Graph mask nodes and partner mask edits
+# answer at the input size; partner edits that render their own size take the tier as a param:
+# ``(param, {tier: value})``, or ``"size"`` for OpenAI's "WxH". Param pass-through by
+# partner_generate is documented for Grok only; Nano Banana / OpenAI are by node spec.
+_ALL = ("1K", "2K", "4K")
+RESOLUTIONS = {
+    "flux-pro-fill": ("1K", "2K"), "flux-erase": ("1K", "2K"),
+    "bria-genfill": ("1K", "2K"), "bria-eraser": ("1K", "2K"),
+    "recraft-inpaint": ("1K", "2K"), "ideogram-v3-edit": ("1K", "2K"),
+    "flux-kontext-pro": (), "flux-kontext-max": (),     # aspect_ratio only, ~1 MP
+    "nano-banana-2": _ALL, "nano-banana-pro": _ALL,
+    "qwen-image-3": ("1K", "2K"),                       # edit output matches the input
+    "grok-image-edit": ("1K", "2K"),
+    "gpt-image-2.5-flare": _ALL, "gpt-image-2.5-sunburst": _ALL,
+}
+PARTNER_RESOLUTION = {
+    "nano-banana-2": ("resolution", {"1K": "1K", "2K": "2K", "4K": "4K"}),
+    "nano-banana-pro": ("resolution", {"1K": "1K", "2K": "2K", "4K": "4K"}),
+    "grok-image-edit": ("resolution", {"1K": "1k", "2K": "2k"}),
+    "gpt-image-2.5-flare": "size",
+    "gpt-image-2.5-sunburst": "size",
+}
+# OpenAI gpt-image-2+ pixel limits (also through Comfy Cloud's direct OpenAI path).
+_OPENAI_LIMITS = dict(min_pixels=655360, max_pixels=3840 * 2160, tier_max_side=3840)
+
+# Fixed ``partner_generate`` params per model (the variant of a multi-model slug). A mask edit on
+# openai/images-generations sends no default model, so the variant must always be named.
+PARTNER_PARAMS = {
+    "grok-image-edit": {"model": "grok-imagine-image-2.0"},
+    "gpt-image-2.5-flare": {"model": "gpt-image-2.5-flare"},
+    "gpt-image-2.5-sunburst": {"model": "gpt-image-2.5-sunburst"},
 }
 
 
@@ -119,6 +159,21 @@ def build_fill_graph(image_name, mask_name, prompt, seeds, spec, negative_prompt
                        "inputs": {"images": [fill, 0], "filename_prefix": "genfill_%d" % (i + 1)},
                        "_meta": {"title": "GenFill Result %d" % (i + 1)}}
     return graph
+
+
+ESTIMATE_RE = re.compile(r"Estimated total:\s*([\d.,]+)\s*credits", re.I)
+
+
+def parse_estimate(result):
+    """Credits from an ``estimate_credits`` answer ("Estimated total: 21 credits"), or None."""
+    text = result if isinstance(result, str) else json.dumps(result)
+    m = ESTIMATE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def parse_upload_url(result):
@@ -219,16 +274,78 @@ class ComfyCloudBackend(McpBackend):
                   note="Cheap ~1K tier."),
         ModelSpec("nano-banana-pro", "Nano Banana Pro", "edit", max_count=4),
         ModelSpec("qwen-image-3", "Qwen Image 3", "edit", max_count=4),
+        ModelSpec("flux-2-max", "Flux 2 Max", "edit", max_count=4),
+        ModelSpec("grok-image-edit", "Grok Imagine Image 2.0", "edit", max_count=4,
+                  note="xAI reference edit (grok-imagine-image-2.0)."),
+        ModelSpec("gpt-image-2.5-flare", "GPT Image 2.5 Flare", "inpaint", max_count=4,
+                  note="OpenAI mask edit, faster 2.5 tier."),
+        ModelSpec("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst", "inpaint", max_count=4,
+                  note="OpenAI mask edit, higher-quality 2.5 tier."),
+        ModelSpec("ideogram-v3-edit", "Ideogram V3 Edit", "inpaint", max_count=4,
+                  note="Ideogram V3 mask edit, good with text."),
     )
 
-    def model_size(self, width, height, model=""):
+    def resolutions(self, model=""):
+        spec = self.model_spec(model)
+        return RESOLUTIONS.get(spec.id, ("1K",)) if spec is not None else ("1K",)
+
+    def pixel_limits(self, model=""):
+        spec = self.model_spec(model)
+        if spec is not None and PARTNER_RESOLUTION.get(spec.id) == "size":
+            return _OPENAI_LIMITS["min_pixels"], _OPENAI_LIMITS["max_pixels"]
+        return None, None
+
+    def model_size(self, width, height, model="", resolution="auto"):
         spec = self.model_spec(model)
         if spec.kind == "edit" and "kontext" in (PARTNER_SLUGS.get(spec.id) or spec.id):
             # Kontext takes an aspect_ratio from ASPECTS: send the plate in exactly that shape.
             return _snapped(width, height)[:2]
         multiple = 32 if spec.kind != "edit" else 16
-        return region.scale_to_pixel_budget(width, height, 1024 * 1024, multiple,
-                                            min_side=256, max_aspect=3.0)
+        tier, _ = self.resolution_plan(model, resolution)
+        if tier != "auto" and PARTNER_RESOLUTION.get(spec.id) == "size":
+            multiple = 16       # OpenAI sizes: sides on a 16 px grid
+        budget = self.tier_budget(width, height, model, resolution, 1024 * 1024)
+        max_side = _OPENAI_LIMITS["tier_max_side"] if (
+            tier != "auto" and PARTNER_RESOLUTION.get(spec.id) == "size") else None
+        w, h = region.scale_to_pixel_budget(width, height, budget, multiple,
+                                            min_side=256, max_side=max_side, max_aspect=3.0)
+        if tier == "auto":
+            return w, h
+        return region.clamp_pixels(w, h, multiple, *self.pixel_limits(model))
+
+    def _resolution_params(self, spec, request):
+        """``partner_generate`` params that carry the resolution tier (auto: none)."""
+        tier = self.request_tier(request, spec.id)
+        how = PARTNER_RESOLUTION.get(spec.id)
+        if tier == "auto" or not how:
+            return {}
+        if how == "size":
+            return {"size": "%dx%d" % (request.width, request.height)}
+        field, values = how
+        return {field: values[tier]} if tier in values else {}
+
+    # ---- cost -----------------------------------------------------------------
+    def estimate(self, request, api_key=""):
+        """``estimate_credits`` on the graph Generate would submit (mask node models).
+
+        Partner models (``partner_generate``) can't be priced by the server: a note only.
+        Comfy Cloud has no balance tool (only usage reports), so ``balance`` stays None.
+        """
+        spec = self.model_spec(request.model)
+        if not request.prompt.strip() and spec.erase:
+            spec = self.model_spec(spec.erase)
+        node = NODES.get(spec.id) if spec.id not in PARTNER_SLUGS else None
+        if node is None:
+            return pricing.Quote(None, note="billed in Comfy credits", count=request.count)
+        count = request.count if node.seeded else 1
+        graph = build_fill_graph("genfill_plate.png", "genfill_mask.png",
+                                 request.prompt.strip() or EDIT_EMPTY_PROMPT,
+                                 [i + 1 for i in range(count)], node, request.negative_prompt)
+        text = self.quiet_client(api_key).call_tool("estimate_credits", {"workflow": graph})
+        credits = parse_estimate(text)
+        if credits is None:
+            raise BackendError("Comfy Cloud estimate_credits gave no total.")
+        return pricing.Quote(credits, pricing.CREDITS, False, count=count)
 
     # ---- generation ---------------------------------------------------------
     def generate(self, request, api_key, progress=None, cancelled=None):
@@ -248,15 +365,16 @@ class ComfyCloudBackend(McpBackend):
 
         base_seed = request.seed or random.randint(1, MAX_SEED - request.count)
         step(0.02, "Uploading to Comfy Cloud...")
-        if spec.kind == "edit":
-            plate = self.upload(client, request.image_path, request.read("image_path"))
-            check()
-            return self._partner(client, spec, request, plate, base_seed, step, check,
-                                 cancelled)
         plate = self.upload(client, request.image_path, request.read("image_path"))
         check()
+        if spec.kind == "edit":
+            return self._partner(client, spec, request, plate, None, base_seed, step, check,
+                                 cancelled)
         mask = self.upload(client, request.mask_path, request.read("mask_path"))
         check()
+        if spec.id in PARTNER_SLUGS:    # partner mask edit
+            return self._partner(client, spec, request, plate, mask, base_seed, step, check,
+                                 cancelled)
         node = NODES.get(spec.id)
         if node is None:
             raise BackendError("Comfy Cloud model %r has no mask workflow." % spec.id)
@@ -348,9 +466,18 @@ class ComfyCloudBackend(McpBackend):
         return collect(list(enumerate(urls)), one, cancelled, errors)[0]
 
     # ---- partner edit models ------------------------------------------------
-    def _partner(self, client, spec, request, plate, base_seed, step, check, cancelled):
+    def _partner(self, client, spec, request, plate, mask, base_seed, step, check, cancelled):
+        """``partner_generate`` per variation; ``mask`` (an upload) makes it a mask edit."""
         slug = PARTNER_SLUGS.get(spec.id) or spec.id
-        prompt = ref_prompt(request.prompt)
+        if mask:
+            prompt = request.prompt.strip() or EDIT_EMPTY_PROMPT
+        else:
+            prompt = ref_prompt(request.prompt)
+        medias = [{"role": "image", "name": plate["name"], "subfolder": plate["subfolder"],
+                   "type": "input"}]
+        if mask:
+            medias.append({"role": "mask", "name": mask["name"],
+                           "subfolder": mask["subfolder"], "type": "input"})
         out, errors = [], []
         for i in range(request.count):
             check()
@@ -358,12 +485,14 @@ class ComfyCloudBackend(McpBackend):
                  "Generating variation %d of %d..." % (i + 1, request.count))
             args = {"type": "image", "model": slug, "client_os": client_os(),
                     "prompt": prompt, "seed": (base_seed + i) % MAX_SEED,
-                    "medias": [{"role": "image", "name": plate["name"],
-                                "subfolder": plate["subfolder"], "type": "input"}],
+                    "medias": [dict(m) for m in medias],
                     "confirm": True, "wait_for_output": True}
+            params = dict(PARTNER_PARAMS.get(spec.id) or {})
+            params.update(self._resolution_params(spec, request))
             if "kontext" in slug:
-                args["params"] = {"aspect_ratio": _closest_aspect(request.width,
-                                                                  request.height)}
+                params["aspect_ratio"] = _closest_aspect(request.width, request.height)
+            if params:
+                args["params"] = params
             try:
                 urls = self._partner_once(client, args, cancelled, step)
             except Cancelled:

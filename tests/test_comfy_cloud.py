@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -167,6 +169,73 @@ class TestGenerate(Env):
         self.assertTrue(a["prompt"].startswith("grass"))
         self.assertNotEqual(calls[0]["seed"], calls[1]["seed"])
         self.assertEqual(self.called("submit_workflow"), [])
+
+    def test_partner_mask_edit_gpt_image_2_5(self):
+        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"):
+            self.client.calls[:] = []
+            self.uploads[:] = []
+            out = self.b.generate(self.req(model=model, count=2), "k")
+            self.assertEqual(len(out), 2)
+            self.assertEqual(len(self.called("upload_file")), 2)     # plate + mask
+            calls = self.called("partner_generate")
+            self.assertEqual(len(calls), 2)
+            a = calls[0]
+            self.assertEqual(a["model"], "openai/images-generations")
+            self.assertEqual(a["params"], {"model": model})
+            self.assertEqual([m["role"] for m in a["medias"]], ["image", "mask"])
+            self.assertEqual(a["medias"][1]["type"], "input")
+            self.assertEqual(a["prompt"], "grass")       # mask edit: no reference wording
+            self.assertEqual(self.called("submit_workflow"), [])
+        self.assertEqual(self.b.model_spec("gpt-image-2.5-flare").kind, "inpaint")
+
+    def test_partner_mask_edit_ideogram_empty_prompt(self):
+        self.b.generate(self.req(model="ideogram-v3-edit", count=1, prompt=" "), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "ideogram/generate")
+        self.assertNotIn("params", a)
+        self.assertEqual([m["name"] for m in a["medias"]], ["n1.png", "n2.png"])
+        self.assertEqual(a["medias"][1]["role"], "mask")
+        self.assertEqual(a["prompt"], cc.EDIT_EMPTY_PROMPT)
+
+    def test_new_partner_edit_models(self):
+        self.b.generate(self.req(model="grok-image-edit", count=1), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "xai/grok-image-edit")
+        self.assertEqual(a["params"], {"model": "grok-imagine-image-2.0"})
+        self.assertEqual([m["role"] for m in a["medias"]], ["image"])
+        self.client.calls[:] = []
+        self.b.generate(self.req(model="flux-2-max", count=1), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "bfl/flux-2-max")
+        self.assertNotIn("params", a)
+        self.assertEqual(len(self.called("upload_file")), 1)
+
+    def test_resolution_tiers(self):
+        b = self.b
+        self.assertEqual(b.size_plan(5000, 2800, "flux-pro-fill", "4K").note, "model max 2K")
+        w, h = b.model_size(5000, 2800, "flux-pro-fill", "2K")
+        self.assertEqual((w % 32, h % 32), (0, 0))
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.03)
+        self.assertEqual(b.size_plan(5000, 2800, "flux-kontext-pro", "2K").note, "fixed size")
+        self.assertEqual(b.size_plan(5000, 2800, "flux-2-pro", "2K").note, "model max 1K")
+        for model, res, want in (("nano-banana-2", "4K", {"resolution": "4K"}),
+                                 ("nano-banana-pro", "2K", {"resolution": "2K"}),
+                                 ("nano-banana-pro", "auto", None),
+                                 ("grok-image-edit", "4K", {"resolution": "2k",
+                                                            "model": "grok-imagine-image-2.0"}),
+                                 ("qwen-image-3", "2K", None)):       # output matches input
+            self.client.calls[:] = []
+            w, h = b.model_size(5000, 2800, model, res)
+            b.generate(self.req(model=model, count=1, width=w, height=h, resolution=res), "k")
+            a = self.called("partner_generate")[0]
+            self.assertEqual(a.get("params"), want, (model, res))
+        self.client.calls[:] = []
+        w, h = b.model_size(8000, 4500, "gpt-image-2.5-flare", "4K")
+        self.assertEqual((w, h), (3840, 2160))
+        b.generate(self.req(model="gpt-image-2.5-flare", count=1, width=w, height=h,
+                            resolution="4K"), "k")
+        self.assertEqual(self.called("partner_generate")[0]["params"],
+                         {"model": "gpt-image-2.5-flare", "size": "3840x2160"})
 
     def test_partner_in_progress_falls_back_to_wait(self):
         self.tools["partner_generate"] = {"prompt_id": "q", "status": "in_progress",

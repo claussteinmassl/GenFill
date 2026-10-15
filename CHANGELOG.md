@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.9.0 - 2026-10-15
+
+- **ComfyUI backend with workflows.** GenFill runs API-format ComfyUI workflows on any ComfyUI
+  server: your machine (`http://127.0.0.1:8188`), another machine on the network, or a RunPod pod
+  (`https://<pod-id>-8188.proxy.runpod.net`). Each workflow is one entry in the model version menu.
+  URL, an optional bearer token for reverse proxies and the workflow folders are set in
+  *API Keys & Accounts* or with `GENFILL_COMFY_URL`, `GENFILL_COMFY_TOKEN` and
+  `GENFILL_COMFY_WORKFLOWS`.
+- **Shipped workflows:** FLUX.1 Fill [dev] (local model files, plus an erase partner for an empty
+  prompt) and Comfy API workflows (FLUX Pro Fill and Erase, Bria GenFill and Eraser, Recraft
+  inpaint), which bill your Comfy.org account key (`COMFY_API_KEY`, as for Comfy Cloud).
+- **Studio workflows.** Add your own graphs: export with *Workflow > Export (API)*, title the
+  nodes `GenFill Image`, `GenFill Mask`, `GenFill Prompt`, ... and drop the file with an optional
+  `<id>.genfill.json` sidecar into a folder listed in `GENFILL_COMFY_WORKFLOWS` or
+  `comfyui.workflow_dirs`. Later folders override shipped workflow ids. See
+  `nuke/workflows/comfyui/README.md`.
+- **Removed the built-in Local AI** (the FLUX/LaMa helper with its ~25 GB, Windows-only installer).
+  ComfyUI replaces it; nodes that were set to *Local* switch to ComfyUI automatically. Upgrade
+  note: the old helper folder `%USERPROFILE%\GenFill-LocalAI` is no longer used and can be deleted.
+  Results now come back as 8-bit PNG (the float TIFF path of the old helper is gone); the colour
+  pipeline is unchanged.
+- `installers/live_check.py` takes `--workflows DIR` to run ComfyUI workflows from a folder, e.g.
+  `python installers/live_check.py comfyui sdxl_inpaint --workflows tests/fixtures/comfyui`.
+- **Multi-line prompts.** Prompt and negative prompt are multi-line text fields (the panel's
+  prompt starts at 3 lines and grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates, Enter
+  adds a line. New nodes use multi-line knobs; existing nodes keep working. The node's info
+  label shows the first line of the prompt.
+- **Newer models in the version menu.** The menu also lists models Magnific, Higgsfield and
+  fal.ai added after this release, marked "(new)". The lists are fetched in the background once
+  a day, or on demand with *Refresh model list…* at the end of the menu, and cached in
+  `~/.nuke/genfill/models_cache.json`. Curated entries keep their tuned settings; a failed fetch
+  keeps the previous list.
+- **Current model catalogues.** Magnific: GPT 2.5 (`gpt-2-mini`), Retouch GPT 2.5 and Retouch
+  Ideogram 4.5, Flux.2 Pro / Max / Flex, Seedream 5 Lite / Flash. fal.ai: Ideogram 4.5 Edit,
+  GPT Image 2.5 Flare / Sunburst, Nano Banana 2.1. Comfy Cloud: GPT Image 2.5, Ideogram V3
+  Edit, Flux 2 Max, Grok. Higgsfield: Hazel, Grok, Kling O1. Magnific GPT models pass the
+  *quality* setting.
+- **Processing resolution.** New *resolution* setting (auto / 1K / 2K / 4K) next to *quality*,
+  also in the panel together with the exact size the next Generate sends ("sends 2048 × 1152
+  (2K)"). Each model gets the crop at about 1, 4 or 16 megapixels: never more than the crop has,
+  clamped to what the model supports ("model max 2K"), with the provider's resolution option
+  set to match. Fixed-size models are unchanged; *auto* keeps the previous sizes.
+  `live_check.py --resolution` tests a tier.
+- **Cost preview and credit balance.** The panel shows the cost of the next Generate for the
+  current model, resolution, quality and variations: live quotes from Magnific, Higgsfield and
+  Comfy Cloud, fal.ai's pricing API, estimates for OpenAI and Stability AI, free for ComfyUI.
+  Magnific, Higgsfield and Stability AI also show the credit balance.
+- **Unverified against the live services** (unit-tested with mocked services only): the mask
+  polarity of Comfy Cloud GPT Image 2.5 and Ideogram V3 Edit, and the mask inversion GenFill
+  applies for fal Ideogram 4.5 Edit; Comfy Cloud passing the resolution / size setting through
+  to partner models; the response formats of fal's pricing API and Stability's balance
+  endpoint. Higgsfield mask inpainting stays off because the server rejects the mask role
+  (verified 2026-10-15).
+
 ## 0.8.0 - 2026-10-15
 
 - **Four new cloud backends: fal.ai, Magnific, Higgsfield and Comfy Cloud.** Pick them in the

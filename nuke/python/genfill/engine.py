@@ -225,7 +225,9 @@ def refresh_result(node):
     node["gf_has_result"].setValue(True)
     order = gfstate.variations(st)
     idx = order.index((gi, vi)) + 1
-    prompt = gen.get("prompt") or "(remove)"
+    # gf_info is a one-line label: use the first non-empty line of a multi-line prompt.
+    lines = [l.strip() for l in (gen.get("prompt") or "").splitlines() if l.strip()]
+    prompt = lines[0] if lines else "(remove)"
     for bad, good in (("[", "("), ("]", ")"), ("{", "("), ("}", ")"), ("$", ""), ("\\", "/")):
         prompt = prompt.replace(bad, good)
     if len(prompt) > 28:
@@ -296,7 +298,7 @@ def delete_variation(node, gi, vi, delete_file=True):
 
 
 def _thumb_path(path):
-    """Float results have an 8-bit preview next to them for the panel."""
+    """Float TIFF results of the old Local AI (<= 0.8) have an 8-bit preview next to them."""
     preview = os.path.splitext(path)[0] + "_preview.png"
     return preview if os.path.exists(preview) else path
 
@@ -357,6 +359,32 @@ def _execute(node, write_name, path, frame):
         raise UserError("Nuke did not write %s" % path)
 
 
+def resolution(node):
+    """The node's processing resolution (``auto``, ``1K``, ``2K``, ``4K``)."""
+    if "gf_resolution" not in node.knobs():
+        return "auto"
+    return backends.base.normalize_resolution(node["gf_resolution"].value())
+
+
+def size_plan(node, backend=None):
+    """What Generate would send, for the panel: :class:`backends.base.SizePlan` or None.
+
+    Main thread. Uses the region of the newest generation (the last selection GenFill saw),
+    else the plate format.
+    """
+    backend = backend or gfnode.backend_for(node)
+    st = get_state(node)
+    if st["generations"]:
+        _x, _y, w, h = st["generations"][-1]["region"]
+    else:
+        src = node.input(0)
+        if src is None:
+            return None
+        fmt = src.format()
+        w, h = fmt.width(), fmt.height()
+    return backend.size_plan(w, h, node["gf_model"].value().strip(), resolution(node))
+
+
 def _prepare(node, backend, frame, job_dir):
     """Render probe + crops. Returns (region, model_w, model_h, files dict)."""
     src_input = node.input(0)
@@ -394,13 +422,15 @@ def _prepare(node, backend, frame, job_dir):
     context = node["gf_context"].value()
     min_size = int(node["gf_min_size"].value())
     model = node["gf_model"].value().strip()
+    res = resolution(node)
     rough = region.expand_region(box, fw, fh, context=context, min_size=min_size)
-    mw, mh = backend.model_size(rough.w, rough.h, model)
+    plan = backend.size_plan(rough.w, rough.h, model, res)
+    mw, mh = plan.width, plan.height
     reg = region.expand_region(box, fw, fh, context=context, min_size=min_size,
                                aspect=float(mw) / mh)
 
-    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s)", reg.x, reg.y, reg.w, reg.h,
-               mw, mh, backend.id)
+    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s, resolution %s: %s)",
+               reg.x, reg.y, reg.w, reg.h, mw, mh, backend.id, res, plan.text())
 
     # 3. crops
     for crop_name, ref_name in ((gfnode.CROP_SRC, gfnode.REFORMAT_SRC),
@@ -412,14 +442,13 @@ def _prepare(node, backend, frame, job_dir):
     transfer = resolve_transfer(node)
     colorspace.configure(_internal(node, gfnode.TO_MODEL), _internal(node, gfnode.TO_MODEL_LOG),
                          _internal(node, gfnode.TO_MODEL_OCIO), transfer, "to")
-    float_io = getattr(backend, "float_io", False)
     files = {
-        "image": os.path.join(job_dir, "source.tif" if float_io else "source.png"),
+        "image": os.path.join(job_dir, "source.png"),
         "mask": os.path.join(job_dir, "mask.png"),
         "mask_alpha": os.path.join(job_dir, "mask_alpha.png"),
         "transfer": transfer,
     }
-    _execute(node, gfnode.WRITE_SRC_F if float_io else gfnode.WRITE_SRC, files["image"], frame)
+    _execute(node, gfnode.WRITE_SRC, files["image"], frame)
     _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
     _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
     return reg, mw, mh, (fw, fh), files
@@ -494,16 +523,6 @@ def generate(node, prompt=None, blocking=False):
     backend = gfnode.backend_for(node)
     gflog.info("backend=%s model=%r prompt=%r frame=%s", backend.id, node["gf_model"].value(),
                prompt, nuke.frame())
-    if getattr(backend, "is_installed", None) is not None and not backend.is_installed():
-        msg = "Local AI isn't installed yet. Click 'Local AI...' in the node's panel to install it."
-        gflog.warning(msg)
-        _set_status(_uid(node), running=False, message="", error=msg)
-        if nuke.GUI and not QUIET and nuke.ask(
-                "Local AI isn't installed yet.\n\nOpen the installer now? It downloads about 25 GB "
-                "in the background while you keep working."):
-            from .ui import localai_dialog
-            localai_dialog.show()
-        return False
     # Keys can also be optional (Comfy Cloud: a key, or a browser sign-in).
     api_key = config.get_api_key(backend.id, backend.env_var)
     if backend.needs_key:
@@ -566,7 +585,8 @@ def generate(node, prompt=None, blocking=False):
         image_path=files["image"], mask_path=files["mask"],
         mask_alpha_path=files["mask_alpha"], prompt=prompt, width=mw, height=mh,
         seed=seed, count=count, negative_prompt=node["gf_negative"].value(),
-        model=node["gf_model"].value().strip(), quality=node["gf_quality"].value())
+        model=node["gf_model"].value().strip(), quality=node["gf_quality"].value(),
+        resolution=resolution(node))
     request.transfer = files["transfer"]
     meta = {
         "id": gen_id,
@@ -581,6 +601,7 @@ def generate(node, prompt=None, blocking=False):
         "format": list(fmt),
         "region": [reg.x, reg.y, reg.w, reg.h],
         "model_size": [mw, mh],
+        "resolution": request.resolution,
         "abs_dir": job_dir,
         "transfer": files["transfer"],
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -649,17 +670,12 @@ def _worker(node, uid, backend, request, api_key, meta, job_dir,
         gflog.info("%s returned %d image(s)", backend.id, len(images))
         files = []
         names = meta.get("var_names") or []
-        ext = getattr(backend, "result_ext", ".png")
-        for i, item in enumerate(images):
-            data, preview = item if isinstance(item, tuple) else (item, None)
-            sniffed = backends.base.sniff_image(data) if not backend.float_io else None
+        for i, data in enumerate(images):
+            sniffed = backends.base.sniff_image(data)
             base = names[i] if i < len(names) else "var_%02d" % (i + 1)
-            name = base + (sniffed if sniffed in (".png", ".jpg") else ext)
+            name = base + (sniffed if sniffed in (".png", ".jpg") else ".png")
             with open(os.path.join(job_dir, name), "wb") as fh:
                 fh.write(data)
-            if preview:
-                with open(os.path.join(job_dir, base + "_preview.png"), "wb") as fh:
-                    fh.write(preview)
             files.append("%s/%s" % (meta["id"], name))
         meta["files"] = files
         send(_finish, (node, uid, meta))

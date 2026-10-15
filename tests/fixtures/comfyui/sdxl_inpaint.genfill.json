@@ -1,0 +1,15 @@
+{
+  "label": "SDXL inpaint (test)",
+  "description": "Test-only SDXL inpainting workflow.",
+  "kind": "inpaint",
+  "empty_prompt": "sdxl_erase",
+  "pixels": 1048576,
+  "multiple": 64,
+  "min_side": 512,
+  "max_side": 2048,
+  "api_nodes": false,
+  "timeout": 1800,
+  "requires": [
+    "models/checkpoints/sd_xl_base_1.0_inpainting_0.1.safetensors"
+  ]
+}

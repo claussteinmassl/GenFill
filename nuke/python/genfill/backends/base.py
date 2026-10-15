@@ -17,7 +17,7 @@ try:  # Python 3
 except ImportError:  # pragma: no cover - Python 2 Nuke is not supported
     raise
 
-USER_AGENT = "GenFill-Nuke/0.8"
+USER_AGENT = "GenFill-Nuke/0.9"
 
 
 # Prompts for models that re-render the whole crop (GenFill comps the result back through the
@@ -35,6 +35,143 @@ REF_PROMPT_SUFFIX = (" Keep everything else in the photo exactly the same: frami
                      "grain, perspective and focus.")
 
 
+# --------------------------------------------------------------------------
+# Processing resolution (the gf_resolution knob)
+# --------------------------------------------------------------------------
+
+RESOLUTIONS = ("auto", "1K", "2K", "4K")
+TIERS = ("1K", "2K", "4K")                      # smallest first
+TIER_PIXELS = {"1K": 1024 * 1024, "2K": 2048 * 2048, "4K": 4096 * 4096}
+NATIVE_SHARE = 0.8      # a tier "holds" a crop that fits 80% of its pixels (see sent_tier)
+
+
+def normalize_resolution(value):
+    """``"auto"`` or one of :data:`TIERS` for a knob or provider value (``"2k"`` -> ``"2K"``)."""
+    text = str(value or "").strip().upper()
+    return text if text in TIER_PIXELS else "auto"
+
+
+def resolution_budget(resolution, default_budget):
+    """Pixel budget of a resolution tier; ``default_budget`` for ``auto``."""
+    return TIER_PIXELS.get(normalize_resolution(resolution), default_budget)
+
+
+def tiers_from(values):
+    """The GenFill tiers in a provider's resolution list (``["1k", "1.5k", "2k"]`` -> 1K, 2K).
+
+    Only exact 1K/2K/4K entries count (case-insensitive, also ``auto_2K``); in-between sizes
+    such as ``1.5k`` stay available as the model's ``auto`` default.
+    """
+    found = set()
+    for v in values or []:
+        text = str(v).strip().upper()
+        if text.startswith("AUTO_"):
+            text = text[len("AUTO_"):]
+        if text in TIER_PIXELS:
+            found.add(text)
+    return tuple(t for t in TIERS if t in found)
+
+
+def clamp_resolution(resolution, supported):
+    """``(tier, note)``: the tier a model runs for a requested resolution.
+
+    Args:
+        resolution: Knob value (``auto``, ``1K``, ``2K``, ``4K``).
+        supported: The model's tiers; ``None`` = any size, ``()`` = fixed size.
+
+    Returns:
+        ``("auto", "")`` for auto, ``("auto", "fixed size")`` for a fixed-size model, else the
+        requested tier or the nearest one the model offers with a note ("model max 2K").
+    """
+    res = normalize_resolution(resolution)
+    if res == "auto":
+        return "auto", ""
+    if supported is None:
+        return res, ""
+    supported = [t for t in TIERS if t in supported]
+    if not supported:
+        return "auto", "fixed size"
+    if res in supported:
+        return res, ""
+    if TIERS.index(res) > TIERS.index(supported[-1]):
+        return supported[-1], "model max %s" % supported[-1]
+    if TIERS.index(res) < TIERS.index(supported[0]):
+        return supported[0], "model min %s" % supported[0]
+    below = [t for t in supported if TIERS.index(t) < TIERS.index(res)]
+    return below[-1], "model offers %s" % ", ".join(supported)
+
+
+def tier_budget(width, height, tier, default_budget, min_pixels=None, max_pixels=None):
+    """Pixel budget for a crop of ``width`` x ``height`` (plate pixels) at ``tier``.
+
+    ``auto`` keeps ``default_budget``. A tier never upscales the crop: a context region with
+    fewer pixels than the tier is sent at its own size. ``max_pixels`` / ``min_pixels`` are the
+    model's limits (``min_pixels`` wins: some APIs refuse small images).
+    """
+    if normalize_resolution(tier) == "auto":
+        return default_budget
+    budget = min(TIER_PIXELS[normalize_resolution(tier)], int(width) * int(height))
+    if max_pixels:
+        budget = min(budget, int(max_pixels))
+    if min_pixels:
+        budget = max(budget, int(min_pixels))
+    return budget
+
+
+def sent_tier(tier, width, height, supported=None):
+    """The tier to ask a provider for when ``width`` x ``height`` is sent at ``tier``.
+
+    Usually ``tier`` itself; for a crop smaller than the tier (sent at its own size) the
+    smallest supported tier that holds it, so the provider does not render (and bill) more
+    pixels than the crop has.
+    """
+    tier = normalize_resolution(tier)
+    if tier == "auto":
+        return tier
+    pixels = int(width) * int(height) * NATIVE_SHARE
+    options = [t for t in TIERS if (supported is None or t in supported)
+               and TIERS.index(t) <= TIERS.index(tier)]
+    for t in options:
+        if TIER_PIXELS[t] >= pixels:
+            return t
+    return tier
+
+
+class SizePlan(object):
+    """What the panel and the log say about the size sent to a model.
+
+    ``width``/``height`` are sent; ``tier`` is the tier the model runs (``auto`` for auto and
+    fixed-size models); ``note`` explains a clamp ("model max 2K"); ``native`` is True when
+    the crop is smaller than the tier and goes at its own size.
+    """
+
+    def __init__(self, width, height, requested, tier, note="", native=False):
+        self.width, self.height = int(width), int(height)
+        self.requested = normalize_resolution(requested)
+        self.tier = tier
+        self.note = note
+        self.native = native
+
+    def text(self):
+        """``"sends 2048 x 1152 (2K)"`` and friends (\u00d7 as the times sign)."""
+        size = u"%d \u00d7 %d" % (self.width, self.height)
+        if self.requested == "auto":
+            what = "auto"
+        elif self.tier == "auto":
+            what = self.note or "fixed size"
+        elif self.native:
+            what = "crop is smaller than %s" % self.tier
+            if self.note:
+                what += ", " + self.note
+        else:
+            what = self.tier + (", " + self.note if self.note else "")
+        return u"sends %s (%s)" % (size, what)
+
+    def __repr__(self):
+        return "SizePlan(%dx%d, %s -> %s %r)" % (self.width, self.height, self.requested,
+                                                 self.tier, self.note)
+
+
 class BackendError(RuntimeError):
     """Raised with a message suitable for showing an artist."""
 
@@ -45,7 +182,8 @@ class Cancelled(BackendError):
 
 class GenerationRequest(object):
     def __init__(self, image_path, mask_path, mask_alpha_path, prompt, width, height,
-                 seed=0, count=3, negative_prompt="", model="", quality="auto"):
+                 seed=0, count=3, negative_prompt="", model="", quality="auto",
+                 resolution="auto"):
         self.image_path = image_path          # sRGB 8-bit RGB PNG
         self.mask_path = mask_path            # white = fill, black = keep (RGB)
         self.mask_alpha_path = mask_alpha_path  # RGBA, alpha 0 = fill (OpenAI style)
@@ -57,6 +195,7 @@ class GenerationRequest(object):
         self.negative_prompt = negative_prompt or ""
         self.model = model or ""
         self.quality = quality or "auto"
+        self.resolution = normalize_resolution(resolution)   # requested: auto, 1K, 2K, 4K
 
     def read(self, attr):
         with open(getattr(self, attr), "rb") as fh:
@@ -68,6 +207,10 @@ class ModelSpec(object):
 
     ``kind``: ``inpaint`` takes the mask; ``edit`` re-renders the crop from the image (GenFill
     comps it back through the selection); ``erase`` removes the masked content (empty prompt).
+
+    Shared ``extra`` keys: ``resolutions`` (tuple of the processing tiers the model supports,
+    "1K"/"2K"/"4K"; ``()`` = fixed size; missing = the backend's ``default_resolutions``) and
+    ``max_pixels`` / ``min_pixels`` (the model's pixel limits for a tier).
     """
 
     def __init__(self, id, label, kind="inpaint", erase=None, max_count=4, note="", **extra):
@@ -78,6 +221,7 @@ class ModelSpec(object):
         self.max_count = max_count  # images per request
         self.note = note
         self.extra = extra
+        self.discovered = False     # True: found by live discovery, not in the curated list
 
     def __repr__(self):
         return "ModelSpec(%r)" % self.id
@@ -91,30 +235,121 @@ class Backend(object):
     default_model = ""
     models = ()             # suggestions shown in the UI
     description = ""
-    float_io = False        # True: takes 32-bit float TIFF in, returns float TIFF
-    result_ext = ".png"     # default; the engine names PNG/JPEG results by their content
     auth = "key"            # "key", "oauth" (browser sign-in) or "key_or_oauth"
     catalogue = ()          # ModelSpec entries, shown in the model version menu
+    discoverable = False    # True: discover() lists the provider's models live
+
+    def discover(self, api_key=""):
+        """Fetch the provider's current model list (see :mod:`discovery`).
+
+        Runs on a worker thread, never on the Generate path, and must never open a browser.
+        Entries use the same ``ModelSpec.extra`` keys as the curated catalogue so ``generate``
+        handles them. Raises :class:`BackendError` (or anything else) when the list can't be
+        fetched; the caller then keeps the cached list.
+        """
+        return []
+
+    def all_models(self):
+        """The curated catalogue followed by cached discovered models it doesn't list."""
+        if not self.discoverable:
+            return list(self.catalogue)
+        from . import discovery
+        return discovery.merge(self.catalogue, discovery.cached(self.id))
 
     def model_ids(self):
         """Model ids for the model version menu."""
-        return [m.id for m in self.catalogue] or list(self.models)
+        return [m.id for m in self.all_models()] or list(self.models)
 
     def model_spec(self, model=""):
-        """The catalogue entry for ``model`` (default model if empty, ad-hoc spec if unknown)."""
+        """The catalogue entry for ``model`` (default model if empty, ad-hoc spec if unknown).
+
+        Curated entries win over discovered ones with the same id.
+        """
         model = (model or self.default_model).strip()
-        for m in self.catalogue:
+        for m in self.all_models():
             if m.id == model:
                 return m
-        return ModelSpec(model, model, kind="edit") if model else None
+        return self.adhoc_spec(model) if model else None
 
-    def model_size(self, width, height, model=""):
-        """Resolution to send for a crop of ``width`` x ``height``."""
+    def adhoc_spec(self, model):
+        """Spec for an id that is neither curated nor discovered (typed by the artist)."""
+        return ModelSpec(model, model, kind="edit")
+
+    # ``resolutions`` of models whose catalogue entry doesn't say (None = any size).
+    default_resolutions = TIERS
+
+    def resolutions(self, model=""):
+        """The tiers ``model`` supports (``None`` = any, ``()`` = fixed size)."""
+        spec = self.model_spec(model)
+        if spec is not None and "resolutions" in spec.extra:
+            value = spec.extra["resolutions"]
+            return None if value is None else tuple(value)
+        return self.default_resolutions
+
+    def pixel_limits(self, model=""):
+        """``(min_pixels, max_pixels)`` of ``model`` for a tier (None = no limit)."""
+        spec = self.model_spec(model)
+        x = spec.extra if spec is not None else {}
+        return x.get("min_pixels"), x.get("max_pixels")
+
+    def resolution_plan(self, model="", resolution="auto"):
+        """``(tier, note)``: the tier ``model`` runs for ``resolution`` (see clamp_resolution)."""
+        tier, note = clamp_resolution(resolution, self.resolutions(model))
+        _, max_pixels = self.pixel_limits(model)
+        if tier != "auto" and not note and max_pixels and TIER_PIXELS[tier] > max_pixels:
+            note = "model max %.1f MP" % (max_pixels / 1e6)
+        return tier, note
+
+    def tier_budget(self, width, height, model, resolution, default_budget):
+        """Pixel budget for ``model_size``: ``default_budget`` for auto, else the tier's."""
+        tier, _ = self.resolution_plan(model, resolution)
+        min_pixels, max_pixels = self.pixel_limits(model)
+        return tier_budget(width, height, tier, default_budget, min_pixels, max_pixels)
+
+    def model_size(self, width, height, model="", resolution="auto"):
+        """Resolution to send for a crop of ``width`` x ``height`` (plate pixels).
+
+        ``resolution`` is the processing tier (``auto`` = the backend's own size, ``1K``,
+        ``2K``, ``4K``): the tier's pixel budget in the crop's aspect, clamped to the model's
+        limits, never more pixels than the crop has.
+        """
         raise NotImplementedError
+
+    def size_plan(self, width, height, model="", resolution="auto"):
+        """:class:`SizePlan` of what ``model_size`` sends, for the panel and the log."""
+        mw, mh = self.model_size(width, height, model, resolution)
+        tier, note = self.resolution_plan(model, resolution)
+        native = (tier != "auto"
+                  and int(width) * int(height) < TIER_PIXELS[tier] * NATIVE_SHARE
+                  and mw * mh < TIER_PIXELS[tier] * NATIVE_SHARE)
+        return SizePlan(mw, mh, resolution, tier, note, native)
+
+    def request_tier(self, request, model=None):
+        """The tier to ask the provider for in ``generate`` (``auto``: send nothing new)."""
+        model = request.model if model is None else model
+        tier, _ = self.resolution_plan(model, request.resolution)
+        return sent_tier(tier, request.width, request.height, self.resolutions(model))
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         """Return a list of PNG bytes, one per variation."""
         raise NotImplementedError
+
+    def estimate(self, request, api_key=""):
+        """What ``generate(request)`` would cost: a :class:`pricing.Quote`, or None (unknown).
+
+        Runs on a worker thread. ``request`` has no image files (``image_path`` etc. are None);
+        width/height/count/model/quality/resolution are what Generate would send. Must never
+        submit work, spend credits or open a browser (raise :class:`oauth.LoginRequired` when a
+        sign-in is missing).
+        """
+        return None
+
+    def balance(self, api_key=""):
+        """Credits left on the account (:class:`pricing.Balance`) or None if unavailable.
+
+        Worker thread, never interactive; may raise (the panel then hides the balance).
+        """
+        return None
 
 
 # --------------------------------------------------------------------------

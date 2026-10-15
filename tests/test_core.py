@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
 from genfill import pngio, region, state  # noqa: E402
@@ -171,6 +173,88 @@ class _Req(object):
     pass
 
 
+class ResolutionTests(unittest.TestCase):
+    """The Resolution setting (auto / 1K / 2K / 4K) shared by every backend."""
+
+    def test_helpers(self):
+        self.assertEqual(base.normalize_resolution("2k"), "2K")
+        self.assertEqual(base.normalize_resolution(""), "auto")
+        self.assertEqual(base.normalize_resolution("8K"), "auto")
+        self.assertEqual(base.resolution_budget("1K", 5), 1048576)
+        self.assertEqual(base.resolution_budget("2K", 5), 4194304)
+        self.assertEqual(base.resolution_budget("4K", 5), 16777216)
+        self.assertEqual(base.resolution_budget("auto", 5), 5)
+        self.assertEqual(base.tiers_from(["768p", "1k", "1.5k", "2k", "4k"]), ("1K", "2K", "4K"))
+        self.assertEqual(base.tiers_from(["auto_2K", "auto_4K", "square"]), ("2K", "4K"))
+        self.assertEqual(base.tiers_from(["1.5k"]), ())
+
+    def test_clamp(self):
+        c = base.clamp_resolution
+        self.assertEqual(c("auto", ("1K",)), ("auto", ""))
+        self.assertEqual(c("2K", None), ("2K", ""))
+        self.assertEqual(c("4K", ("1K", "2K")), ("2K", "model max 2K"))
+        self.assertEqual(c("1K", ("2K", "4K")), ("2K", "model min 2K"))
+        self.assertEqual(c("2K", ("1K", "4K")), ("1K", "model offers 1K, 4K"))
+        self.assertEqual(c("2K", ()), ("auto", "fixed size"))
+
+    def test_never_upscale_beyond_the_crop(self):
+        self.assertEqual(base.tier_budget(800, 600, "2K", 1), 480000)
+        self.assertEqual(base.tier_budget(4000, 3000, "2K", 1), 4194304)
+        self.assertEqual(base.tier_budget(800, 600, "auto", 123), 123)
+        self.assertEqual(base.tier_budget(800, 600, "1K", 1, min_pixels=655360), 655360)
+        self.assertEqual(base.tier_budget(9000, 9000, "4K", 1, max_pixels=8294400), 8294400)
+        mock_b = backends.get("mock")
+        self.assertEqual(mock_b.model_size(800, 600, "", "2K"), (800, 600))
+        plan = mock_b.size_plan(800, 600, "", "2K")
+        self.assertTrue(plan.native)
+        self.assertEqual(plan.text(), u"sends 800 \u00d7 600 (crop is smaller than 2K)")
+        # The provider is asked for the smallest tier that holds the crop.
+        self.assertEqual(base.sent_tier("4K", 1500, 1000), "2K")
+        self.assertEqual(base.sent_tier("4K", 1100, 900), "1K")
+        self.assertEqual(base.sent_tier("2K", 2730, 1536), "2K")
+        self.assertEqual(base.sent_tier("4K", 1100, 900, ("2K", "4K")), "2K")
+
+    def test_auto_is_unchanged(self):
+        for bid in ("mock", "stability", "openai", "fal", "magnific", "higgsfield", "comfy",
+                    "comfyui"):
+            b = backends.get(bid)
+            for m in [""] + b.model_ids()[:12]:
+                self.assertEqual(b.model_size(1900, 1000, m), b.model_size(1900, 1000, m, "auto"))
+                self.assertEqual(b.size_plan(1900, 1000, m).tier, "auto")
+
+    def test_tiers_scale_the_size(self):
+        b = backends.get("mock")
+        for tier, pixels in (("1K", 1048576), ("2K", 4194304), ("4K", 16777216)):
+            w, h = b.model_size(8000, 4500, "", tier)
+            self.assertAlmostEqual(w * h / float(pixels), 1.0, delta=0.02)
+            self.assertAlmostEqual(w / float(h), 16 / 9.0, delta=0.02)
+        plan = b.size_plan(8000, 4500, "", "2K")
+        self.assertEqual(plan.text(), u"sends %d \u00d7 %d (2K)" % (plan.width, plan.height))
+
+    def test_fixed_size_backend(self):
+        b = stability.StabilityBackend()
+        self.assertEqual(b.model_size(4000, 2250, "", "4K"), b.model_size(4000, 2250))
+        self.assertIn("(fixed size)", b.size_plan(4000, 2250, "", "4K").text())
+
+    def test_openai_sizes(self):
+        b = openai_images.OpenAIBackend()
+        w, h = b.model_size(8000, 4500, "gpt-image-2", "4K")
+        self.assertEqual((w, h), (3840, 2160))
+        plan = b.size_plan(8000, 4500, "gpt-image-2", "4K")
+        self.assertEqual(plan.note, "model max 8.3 MP")
+        self.assertIn("model max 8.3 MP", plan.text())
+        w, h = b.model_size(8000, 4500, "gpt-image-2", "2K")
+        self.assertEqual((w % 16, h % 16), (0, 0))
+        self.assertGreater(w * h, 4000000)
+        w, h = b.model_size(9000, 1000, "gpt-image-2", "4K")       # 3:1 cap, long side 3840
+        self.assertLessEqual(max(w, h), 3840)
+        self.assertLessEqual(w * h, 3840 * 2160)
+        w, h = b.model_size(512, 512, "gpt-image-2", "1K")          # API minimum 655,360 px
+        self.assertGreaterEqual(w * h, 655360)
+        self.assertEqual(b.model_size(4000, 2250, "gpt-image-1.5", "4K"), (1536, 1024))
+        self.assertEqual(b.size_plan(4000, 2250, "gpt-image-1.5", "4K").note, "fixed size")
+
+
 class BackendTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -193,7 +277,7 @@ class BackendTests(unittest.TestCase):
                                       seed=7, count=count)
 
     def test_registry(self):
-        self.assertEqual(backends.ids(), ["local", "stability", "openai", "fal", "magnific",
+        self.assertEqual(backends.ids(), ["comfyui", "stability", "openai", "fal", "magnific",
                                           "higgsfield", "comfy", "mock"])
         self.assertEqual(backends.get("mock").label, "Offline Preview (no AI)")
 

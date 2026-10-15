@@ -156,3 +156,19 @@ def aspect_sizes(ratios, budget, multiple=16):
         w, h = scale_to_pixel_budget(a, b, budget, multiple, min_side=multiple)
         out.append((w, h, r))
     return out
+
+
+def clamp_pixels(w, h, multiple, min_pixels=None, max_pixels=None):
+    """Nudge a rounded size back inside a model's pixel limits (rounding can overshoot).
+
+    Sides stay on ``multiple``; the aspect barely changes.
+    """
+    if max_pixels and w * h > max_pixels:
+        s = math.sqrt(float(max_pixels) / (w * h))
+        w = max(multiple, int(w * s / multiple) * multiple)
+        h = max(multiple, int(h * s / multiple) * multiple)
+    if min_pixels and w * h < min_pixels:
+        s = math.sqrt(float(min_pixels) / (w * h))
+        w = int(math.ceil(w * s / multiple)) * multiple
+        h = int(math.ceil(h * s / multiple)) * multiple
+    return w, h

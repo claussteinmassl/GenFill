@@ -12,7 +12,7 @@ import random
 import time
 
 from .base import Backend, Cancelled
-from .. import pngio, region
+from .. import pngio, pricing, region
 
 GRID = 40
 
@@ -128,8 +128,12 @@ class MockBackend(Backend):
     needs_key = False
     description = "Tests the pipeline locally. Smears surrounding colour into the selection."
 
-    def model_size(self, width, height, model=""):
-        return region.scale_to_pixel_budget(width, height, 384 * 384, 8, min_side=64)
+    def model_size(self, width, height, model="", resolution="auto"):
+        budget = self.tier_budget(width, height, model, resolution, 384 * 384)
+        return region.scale_to_pixel_budget(width, height, budget, 8, min_side=64)
+
+    def estimate(self, request, api_key=""):
+        return pricing.Quote(0, pricing.FREE, note="free (offline preview)", count=request.count)
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         img = pngio.read(request.image_path)

@@ -1,0 +1,11 @@
+{
+  "label": "FLUX erase (Comfy API)",
+  "description": "Removes the masked area with the Black Forest Labs erase endpoint through Comfy API nodes. Needs a Comfy account API key; uses credits.",
+  "kind": "erase",
+  "pixels": 1048576,
+  "multiple": 8,
+  "min_side": 256,
+  "max_side": 2048,
+  "api_nodes": true,
+  "timeout": 600
+}

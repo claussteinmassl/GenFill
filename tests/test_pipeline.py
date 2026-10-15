@@ -7,6 +7,8 @@ import tempfile
 import threading
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.dirname(__file__))
 import fake_nuke  # noqa: E402
 
@@ -90,6 +92,66 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(g["gf_output"].value(), "Layer")
         self.assertFalse(gfnode.ensure_current(g))      # idempotent
 
+    def test_old_nodes_get_the_resolution_knob(self):
+        g = self.g
+        self.assertEqual(g["gf_resolution"].values(), ["auto", "1K", "2K", "4K"])
+        del g._knobs["gf_resolution"]
+        self.assertEqual(engine.resolution(g), "auto")
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_resolution"].value(), "auto")
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_generate_at_2k(self):
+        """The Resolution knob reaches the backend: tier size, request and state."""
+        from unittest import mock
+        from genfill.backends import base
+        g = self.g
+        g["gf_resolution"].setValue("2K")
+        g["gf_variations"].setValue(1)
+        seen = []
+        mock_backend = gfnode.backend_for(g)
+        real = mock_backend.generate
+        # Small stand-in tiers keep the pure-Python fake renders fast; the plumbing is the same.
+        tiers = {"1K": 64 * 64, "2K": 128 * 128, "4K": 256 * 256}
+        def spy(self, req, *a, **k):
+            seen.append(req)
+            return real(req, *a, **k)
+
+        with mock.patch.dict(base.TIER_PIXELS, tiers), \
+                mock.patch.object(type(mock_backend), "generate", spy):
+            self.assertTrue(engine.generate(g, "a crate", blocking=True), engine.status(g))
+            plan = engine.size_plan(g)
+        gen = engine.get_state(g)["generations"][0]
+        mw, mh = gen["model_size"]
+        self.assertAlmostEqual(mw * mh / float(tiers["2K"]), 1.0, delta=0.15)
+        self.assertEqual(gen["resolution"], "2K")
+        self.assertEqual((seen[0].resolution, seen[0].width, seen[0].height), ("2K", mw, mh))
+        self.assertEqual((plan.width, plan.height, plan.tier), (mw, mh, "2K"))
+        self.assertIn("(2K)", plan.text())
+        src = pngio.read(fake_nuke.EXECUTED[1][1])
+        self.assertEqual((src.width, src.height), (mw, mh))
+
+    def test_2k_never_upscales_a_small_region(self):
+        g = self.g
+        g["gf_resolution"].setValue("2K")
+        g["gf_variations"].setValue(1)
+        self.assertTrue(engine.generate(g, "a crate", blocking=True), engine.status(g))
+        gen = engine.get_state(g)["generations"][0]
+        _x, _y, w, h = gen["region"]
+        mw, mh = gen["model_size"]
+        self.assertLess(w * h, 2048 * 2048)
+        self.assertLessEqual(abs(mw - w), 8)          # the crop's own size, on the 8 px grid
+        self.assertLessEqual(abs(mh - h), 8)
+        self.assertIn("crop is smaller than 2K", engine.size_plan(g).text())
+
+    def test_size_plan_before_the_first_generation_uses_the_plate(self):
+        g = self.g
+        g["gf_resolution"].setValue("1K")
+        plan = engine.size_plan(g)
+        self.assertAlmostEqual(plan.width * plan.height / 1048576.0, 1.0, delta=0.03)
+        g["gf_resolution"].setValue("auto")
+        self.assertIn("(auto)", engine.size_plan(g).text())
+
     def test_empty_shapes_explains_what_to_do(self):
         g = self.g
         g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
@@ -148,6 +210,17 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(gfnode.ensure_current(g))
         self.assertEqual(g["gf_backend"].values(), gfnode.backend_labels())
         self.assertEqual(g["gf_backend"].value(), "Offline Preview (no AI)")
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_local_backend_moves_to_comfyui(self):
+        g = self.g
+        old = ["Local: FLUX.1 Fill (free, runs on your GPU)", "Stability", "OpenAI"]
+        g["gf_backend"].setValues(old)
+        g["gf_backend"].setValue(0)
+        g["gf_model"].setValue("flux-fill-dev")
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_backend"].value(), "ComfyUI (local, network or cloud)")
+        self.assertEqual(g["gf_model"].value(), "")
         self.assertFalse(gfnode.ensure_current(g))
 
     def test_model_cleared_when_not_in_new_backend(self):
@@ -225,6 +298,24 @@ class PipelineTests(unittest.TestCase):
                          "a [bracketed] {prompt} $var")
         # Old plain-JSON state still loads.
         self.assertEqual(engine.decode_state('{"generations": []}')["generations"], [])
+
+    def test_multiline_prompt_round_trip(self):
+        prompt = "a [red] car\n\n{on} a $road\nat dusk"
+        self.assertEqual(self.g["gf_prompt"].kind, "Multiline_Eval_String_Knob")
+        self.assertEqual(self.g["gf_negative"].kind, "Multiline_Eval_String_Knob")
+        self.assertTrue(engine.generate(self.g, prompt, blocking=True))
+        self.assertEqual(self.g["gf_prompt"].value(), prompt)
+        self.assertEqual(engine.get_state(self.g)["generations"][0]["prompt"], prompt)
+        raw = self.g["gf_state"].value()
+        for ch in "[]{}$\n":
+            self.assertNotIn(ch, raw)
+        info = self.g["gf_info"].value()
+        self.assertNotIn("\n", info)
+        self.assertTrue(info.startswith("a (red) car"), info)
+        self.assertNotIn("road", info)
+        # Leading blank lines are skipped.
+        engine.generate(self.g, "\n  \nsecond line first", blocking=True)
+        self.assertTrue(self.g["gf_info"].value().startswith("second line first"))
 
     def test_pipeline_env_sets_folder_and_names(self):
         from unittest import mock

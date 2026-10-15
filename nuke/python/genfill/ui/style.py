@@ -21,7 +21,7 @@ QLabel#gfSection {{ color: {muted}; font-size: 11px; font-weight: 600;
 QLabel#gfMuted {{ color: {muted}; font-size: 11px; }}
 QLabel#gfError {{ color: {error}; font-size: 11px; }}
 QFrame#gfBar {{ background: {bar}; border: 1px solid {bar_border}; border-radius: 10px; }}
-QLineEdit#gfPrompt {{ background: transparent; border: none; color: {text};
+QPlainTextEdit#gfPrompt {{ background: transparent; border: none; color: {text};
                      font-size: 13px; padding: 4px 2px; selection-background-color: {accent}; }}
 QPushButton#gfGenerate {{ background: {accent}; color: white; border: none; border-radius: 15px;
                          font-size: 12px; font-weight: 600; padding: 6px 16px 6px 12px; }}
@@ -42,6 +42,11 @@ QComboBox#gfModel {{ background: #1f1f1f; color: {text}; border: 1px solid {bar_
 QComboBox#gfModel:hover {{ border-color: #5a5a5a; }}
 QComboBox#gfModel QAbstractItemView {{ background: #2b2b2b; color: {text};
                                       selection-background-color: {accent}; }}
+QComboBox#gfOption {{ background: #1f1f1f; color: {text}; border: 1px solid {bar_border};
+                     border-radius: 6px; padding: 2px 6px; font-size: 11px; min-height: 18px; }}
+QComboBox#gfOption:hover {{ border-color: #5a5a5a; }}
+QComboBox#gfOption QAbstractItemView {{ background: #2b2b2b; color: {text};
+                                       selection-background-color: {accent}; }}
 QProgressBar#gfProgress {{ background: #3a3a3a; border: none; border-radius: 2px; max-height: 4px; }}
 QProgressBar#gfProgress::chunk {{ background: {accent}; border-radius: 2px; }}
 QScrollArea#gfScroll {{ background: transparent; border: none; }}

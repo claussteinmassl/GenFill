@@ -43,7 +43,7 @@ PROBE_WRITE = "gf_probe_write"
 CROP_SRC = "gf_crop_src"
 REFORMAT_SRC = "gf_reformat_src"
 WRITE_SRC = "gf_write_src"            # 8-bit PNG (cloud / preview backends)
-WRITE_SRC_F = "gf_write_src_float"    # 32-bit float TIFF (local model)
+WRITE_SRC_F = "gf_write_src_float"    # legacy float TIFF Write; only in nodes made before 0.9
 TO_MODEL = "gf_to_model"
 TO_MODEL_LOG = "gf_to_model_log"
 TO_MODEL_OCIO = "gf_to_model_ocio"
@@ -65,7 +65,8 @@ OUT_SWITCH = "gf_output_switch"
 BLANK = "gf_layer_blank"
 LAYER = "gf_layer"
 
-WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_SRC_F, WRITE_MASK, WRITE_MASK_A)
+# The Writes every node has. Old nodes may also hold WRITE_SRC_F (disabled, never run).
+WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_MASK, WRITE_MASK_A)
 
 ROTO = "gf_roto"
 SEL_SHAPES, SEL_MASK, SEL_ALPHA = 0, 1, 2
@@ -84,14 +85,23 @@ COLOR_TOOLTIP = (
     "Log (ACEScct): keeps highlights up to ~222 (scene-linear); flatter look for the model.\n"
     "Input colorspace: always the Read's colorspace.\n"
     "Custom: the colorspace in 'custom colorspace'.\n"
-    "The local model gets 32-bit float in and out; the result goes back through the exact "
-    "inverse. Each variation remembers its encoding.")
+    "Every backend sends and receives 8-bit PNG; the result is decoded with the exact inverse. "
+    "Each variation remembers its encoding.")
 OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feathered selection.\n"
                   "Layer: just the generated fill in Source's format, premultiplied by the "
                   "expanded, feathered selection (alpha included), ready to Merge over anything. "
                   "Like a Photoshop generative layer with its mask.\n"
                   "Bypass: Source untouched.")
 QUALITY_MODES = ["auto", "low", "medium", "high"]
+QUALITY_TOOLTIP = ("Passed to models that offer it: GPT Image (OpenAI, fal, Magnific, "
+                   "Higgsfield), Ideogram (fal, Magnific, Higgsfield), Higgsfield Hazel and "
+                   "Grok Image 2.0; auto = model default.")
+RESOLUTION_MODES = ["auto", "1K", "2K", "4K"]
+RESOLUTION_TOOLTIP = ("Processing resolution: the size the crop is sent to the model at.\n"
+                      "auto: each model's usual size (about 1 megapixel).\n"
+                      "1K / 2K / 4K: about 1, 4 or 16 megapixels in the crop's aspect. Never "
+                      "more pixels than the crop has in the plate; models that can't go that "
+                      "high use their largest size (the panel says so). Higher costs more.")
 
 PANEL_EXPR = '__import__("genfill.ui.panel", fromlist=["GenFillPanel"]).GenFillPanel()'
 
@@ -120,13 +130,11 @@ def _place(node, col, row):
     node.setXYpos(int(col * 140), int(row * 70))
 
 
-def _make_write(name, channels, raw, col, row, inp, file_type="png", datatype="8 bit"):
-    w = nuke.nodes.Write(name=name, file_type=file_type)
+def _make_write(name, channels, raw, col, row, inp):
+    w = nuke.nodes.Write(name=name, file_type="png")
     w.setInput(0, inp)
     if "datatype" in w.knobs():
-        w["datatype"].setValue(datatype)
-    if file_type == "tiff" and "compression" in w.knobs():
-        w["compression"].setValue("none")
+        w["datatype"].setValue("8 bit")
     w["channels"].setValue(channels)
     if "create_directories" in w.knobs():
         w["create_directories"].setValue(True)
@@ -453,9 +461,6 @@ def _build_color_nodes(group):
             colorspace.set_raw(old_png, True)
         else:
             _make_write(WRITE_SRC, "rgb", True, 1, 5, tsw)
-        if group.node(WRITE_SRC_F) is None:
-            _make_write(WRITE_SRC_F, "rgb", True, 2, 5, tsw, file_type="tiff",
-                        datatype="32 bit float")
         # from model
         fl = _expression(FROM_MODEL_LOG, colorspace.DECODE_EXPRS, read, -1, 6.5)
         fo = nuke.nodes.OCIOColorSpace(name=FROM_MODEL_OCIO)
@@ -473,6 +478,15 @@ def _build_color_nodes(group):
 def _add_color_knob(group, before_transfer=True):
     k = nuke.Enumeration_Knob("gf_color_mode", "color pipeline", colorspace.MODES)
     k.setTooltip(COLOR_TOOLTIP)
+    group.addKnob(k)
+    return k
+
+
+def _add_resolution_knob(group, startline=True):
+    k = nuke.Enumeration_Knob("gf_resolution", "resolution", RESOLUTION_MODES)
+    k.setTooltip(RESOLUTION_TOOLTIP)
+    if not startline:
+        k.clearFlag(nuke.STARTLINE)
     group.addKnob(k)
     return k
 
@@ -525,6 +539,9 @@ def ensure_current(group):
     if "gf_display" not in group.knobs():
         _add_display_knob(group)
         changed = True
+    if "gf_resolution" not in group.knobs():
+        _add_resolution_knob(group)    # appended (old nodes): defaults to auto
+        changed = True
     if group.node(ROTO) is None and group.node(SEL_SWITCH) is not None \
             and group.node(SRC_IN) is not None:
         _upgrade_selection(group)
@@ -538,6 +555,10 @@ def ensure_current(group):
     labels = backend_labels()
     if knob is not None and list(knob.values()) != labels:
         label = knob.value()        # restore by label: indexes shifted when backends were added
+        if label.startswith("Local"):   # the old built-in local backend became ComfyUI
+            label = backends.get("comfyui").label
+            if "gf_model" in group.knobs():
+                group["gf_model"].setValue("")
         knob.setValues(labels)
         knob.setValue(label if label in labels else labels[0])
         changed = True
@@ -644,8 +665,9 @@ def _add_knobs(group):
     k.setTooltip(MODEL_TOOLTIP)
     group.addKnob(k)
     k = nuke.Enumeration_Knob("gf_quality", "quality", QUALITY_MODES)
-    k.setTooltip("Passed to backends that support it (OpenAI).")
+    k.setTooltip(QUALITY_TOOLTIP)
     group.addKnob(k)
+    _add_resolution_knob(group, startline=False)
     k = nuke.Int_Knob("gf_variations", "variations")
     k.setValue(3)
     k.setTooltip("Variations per Generate click. Photoshop gives 3.")
@@ -654,7 +676,7 @@ def _add_knobs(group):
     k.setValue(0)
     k.setTooltip("0 = new random seed every time (Photoshop behaviour).")
     group.addKnob(k)
-    k = nuke.String_Knob("gf_negative", "negative prompt", "")
+    k = nuke.Multiline_Eval_String_Knob("gf_negative", "negative prompt", "")
     k.setTooltip("What to avoid (Stability only).")
     group.addKnob(k)
 
@@ -697,7 +719,7 @@ def _add_knobs(group):
 
     # ---- hidden state ----------------------------------------------------
     for knob in (nuke.Boolean_Knob("gf_has_result", "has result"),
-                 nuke.String_Knob("gf_prompt", "prompt", ""),
+                 nuke.Multiline_Eval_String_Knob("gf_prompt", "prompt", ""),
                  nuke.String_Knob("gf_info", "info", ""),
                  nuke.String_Knob("gf_uid", "uid", uuid.uuid4().hex[:12]),
                  nuke.Multiline_Eval_String_Knob("gf_state", "state", "")):

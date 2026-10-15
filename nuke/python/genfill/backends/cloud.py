@@ -51,6 +51,14 @@ class McpBackend(Backend):
                          interactive=interactive, progress=progress, cancelled=cancelled,
                          timeout=self.tool_timeout)
 
+    def quiet_client(self, api_key=""):
+        """A non-interactive client for quotes and balances; LoginRequired if not signed in."""
+        from .oauth import LoginRequired
+        if not (api_key and self.api_key_header) and not self.provider().signed_in():
+            raise LoginRequired("Not signed in to %s (API Keys & Accounts...)."
+                                % self.label.split(" (")[0])
+        return self.client(api_key, interactive=False)
+
 
 def ref_prompt(prompt):
     """Prompt for a reference-edit model that never sees the mask."""

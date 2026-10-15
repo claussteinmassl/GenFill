@@ -10,8 +10,9 @@ Transfers (stored per generation, so old variations decode correctly):
     display  The show's display transform as an OCIO colorspace, e.g. ACES
           "Output - Rec.709". Its filmic tone curve squeezes highlights into
           0..1 and the model sees a natural-looking picture; Nuke's inverse
-          expands them back. Default for scene-linear plates. Float transport
-          keeps the inverse smooth (with 8-bit files it bands in highlights).
+          expands them back. Default for scene-linear plates. Transport is
+          8-bit, so the steep inverse near white can band in highlights; log
+          (ACEScct) is the safer encoding there.
     log   ACEScct curve (pure maths, no OCIO needed). 0..1 covers
           scene-linear -0.007 .. 222.9, so highlights survive. Used for
           scene-linear plates (EXR, ACEScg, linear).
@@ -20,9 +21,8 @@ Transfers (stored per generation, so old variations decode correctly):
           Working -> colorspace on the way out, colorspace -> working back.
     none  Working-space values as-is (legacy / data).
 
-Transport: the local model gets 32-bit float TIFF and returns float, so there
-is no 8-bit rounding anywhere. Cloud models need 8-bit PNG; they use the same
-encoding, just quantised.
+Transport: every backend takes and returns 8-bit PNG, so the chosen encoding is
+quantised to 8 bits on the way out and decoded from 8 bits on the way back.
 
 Everything here except the *_node helpers is pure Python (tested without Nuke).
 """

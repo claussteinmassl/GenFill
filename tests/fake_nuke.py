@@ -9,6 +9,8 @@ import os
 import sys
 import types
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
 # Keep test runs out of the artist's real log file.
@@ -71,6 +73,9 @@ class Knob(object):
     def setFlag(self, f):
         self.flags |= f
 
+    def clearFlag(self, f):
+        self.flags &= ~f
+
     def setTooltip(self, t):
         pass
 
@@ -111,7 +116,9 @@ def _knob_factory(cls_name):
             default = 0
         else:
             default = None
-        return Knob(name, label, default)
+        knob = Knob(name, label, default)
+        knob.kind = cls_name
+        return knob
     return make
 
 

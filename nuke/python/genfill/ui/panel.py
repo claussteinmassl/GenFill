@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 
 from .qt import QtCore, QtGui, QtWidgets, Qt
 from . import style
@@ -39,11 +40,28 @@ THUMB_W = 132
 THUMB_H = 92
 COLUMNS = 3
 POLL_MS = 300
+COST_DEBOUNCE = 0.6     # seconds after a settings change before the cost is fetched
+AUTH_CHECK = 1.0        # seconds between checks for a sign-in or a new API key
+REFRESH_ITEM = "__genfill_refresh_models__"   # item data of the "Refresh model list" entry
 
 
 # --------------------------------------------------------------------------
 # controller
 # --------------------------------------------------------------------------
+
+def _refresh_tip(state):
+    """Tooltip of the "Refresh model list" entry: last result and cache age."""
+    lines = ["Fetch the provider's current model list (models added after this GenFill "
+             "release appear as \"(new)\"). Checked automatically once a day."]
+    if state.get("message"):
+        lines.append(("Last refresh: " if state.get("ok") else "Last refresh failed: ")
+                     + state["message"])
+    if state.get("fetched"):
+        import time
+        lines.append("List fetched %s." % time.strftime("%Y-%m-%d %H:%M",
+                                                        time.localtime(state["fetched"])))
+    return "\n".join(lines)
+
 
 class NukeController(object):
     """Adapter between the panel and a GenerativeFill node."""
@@ -65,8 +83,94 @@ class NukeController(object):
     def signature(self):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
-                n["gf_model"].value(),
-                tuple(sorted(self._engine.status(n).items())))
+                n["gf_model"].value(), self.quality(), self.resolution(), self.variations(),
+                self.source_format(), tuple(sorted(self._engine.status(n).items())))
+
+    def source_format(self):
+        """``(name, width, height)`` of the plate on the Source input, or None.
+
+        Part of :meth:`signature`, so the size and cost lines follow a newly connected or
+        reformatted plate.
+        """
+        src = self.node.input(0)
+        if src is None:
+            return None
+        fmt = src.format()
+        return (src.name(), fmt.width(), fmt.height())
+
+    def variations(self):
+        knobs = self.node.knobs()
+        return int(knobs["gf_variations"].value()) if "gf_variations" in knobs else 1
+
+    def _choice(self, name, default):
+        knobs = self.node.knobs()
+        return knobs[name].value() if name in knobs else default
+
+    def _set_choice(self, name, value):
+        knobs = self.node.knobs()
+        if name in knobs and value != knobs[name].value():
+            knobs[name].setValue(value)
+
+    def quality_modes(self):
+        return list(self._gfnode.QUALITY_MODES)
+
+    def quality(self):
+        return self._choice("gf_quality", "auto")
+
+    def set_quality(self, value):
+        self._set_choice("gf_quality", value)
+
+    def resolution_modes(self):
+        return list(self._gfnode.RESOLUTION_MODES)
+
+    def resolution(self):
+        return self._choice("gf_resolution", "auto")
+
+    def set_resolution(self, value):
+        self._set_choice("gf_resolution", value)
+
+    def size_text(self):
+        """``"sends 2048 x 1152 (2K)"`` for the current model and setting, or ""."""
+        plan = self._engine.size_plan(self.node)
+        return plan.text() if plan is not None else ""
+
+    def cost_snapshot(self, prompt=None):
+        """Plain settings for :mod:`pricing` (main thread), or None without a plate.
+
+        Args:
+            prompt: The prompt as typed in the panel; defaults to the saved knob. Only
+                whether it is empty matters (an empty prompt runs the erase model).
+        """
+        from .. import config, pricing
+        b = self._gfnode.backend_for(self.node)
+        plan = self._engine.size_plan(self.node, b)
+        if plan is None:
+            return None
+        return pricing.snapshot(b, self.model_version(), self.quality(),
+                                self._engine.resolution(self.node),
+                                max(1, min(10, self.variations())), plan.width, plan.height,
+                                self.prompt() if prompt is None else prompt,
+                                config.get_api_key(b.id, b.env_var))
+
+    def cost_auth(self):
+        """``pricing.auth_state`` of the current backend (key set, signed in)."""
+        from .. import config, pricing
+        b = self._gfnode.backend_for(self.node)
+        return pricing.auth_state(b, config.get_api_key(b.id, b.env_var))
+
+    def request_cost(self, snap):
+        """Fetch quote and balance on a worker thread (no-op while cached)."""
+        from .. import pricing
+        pricing.request(snap)
+
+    def cost_text(self, snap):
+        """``(text, tooltip)`` of the cost line from the cache."""
+        from .. import pricing
+        return pricing.lookup(snap)
+
+    def forget_balance(self):
+        from .. import pricing
+        pricing.forget_balance(self._gfnode.backend_for(self.node).id)
 
     def prompt(self):
         return self.node["gf_prompt"].value()
@@ -98,9 +202,37 @@ class NukeController(object):
             self.node["gf_model"].setValue(text)
 
     def model_catalogue(self):
-        """(default_model, [(id, label, note), ...]) of the current backend."""
+        """(default_model, [(id, label, note), ...]) of the current backend.
+
+        Curated entries first, then live-discovered ones, labelled " (new)".
+        """
         b = self._gfnode.backend_for(self.node)
-        return b.default_model, [(m.id, m.label, m.note) for m in b.catalogue]
+        return b.default_model, [
+            (m.id, m.label + (" (new)" if getattr(m, "discovered", False) else ""), m.note)
+            for m in b.all_models()]
+
+    def can_discover(self):
+        """True if the current backend can list its models live."""
+        return bool(self._gfnode.backend_for(self.node).discoverable)
+
+    def discover_models(self, force=False):
+        """Start model discovery on a worker thread (automatic: at most once a day)."""
+        from .. import config
+        from ..backends import discovery
+        b = self._gfnode.backend_for(self.node)
+        key = config.get_api_key(b.id, b.env_var)
+        if force:
+            return discovery.start(b, key, force=True)
+        return discovery.maybe_start(b, key)
+
+    def discovery_state(self):
+        """``discovery.state`` of the current backend (busy, ok, message, new, fetched)."""
+        from ..backends import discovery
+        return discovery.state(self._gfnode.backend_for(self.node).id)
+
+    def discovery_revision(self):
+        from ..backends import discovery
+        return discovery.revision()
 
     def status(self):
         return self._engine.status(self.node)
@@ -247,6 +379,57 @@ class Thumbnail(QtWidgets.QLabel):
 # panel
 # --------------------------------------------------------------------------
 
+class PromptEdit(QtWidgets.QPlainTextEdit):
+    """Multi-line prompt field: 3 lines tall, grows to 8 with its content.
+
+    Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS, which Qt maps to
+    the control modifier) emits ``submitted``. ``committed`` is emitted when
+    the field loses focus so the text can be written to the node.
+    """
+
+    MIN_LINES = 3
+    MAX_LINES = 8
+    submitted = QtCore.Signal()
+    committed = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super(PromptEdit, self).__init__(parent)
+        self.setTabChangesFocus(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.textChanged.connect(self._fit_height)
+        self._fit_height()
+
+    def text(self):
+        return self.toPlainText()
+
+    def setText(self, text):
+        self.setPlainText(text)
+
+    def keyPressEvent(self, event):
+        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
+                and event.modifiers() & Qt.ControlModifier):
+            self.submitted.emit()
+            return
+        super(PromptEdit, self).keyPressEvent(event)
+
+    def focusOutEvent(self, event):
+        super(PromptEdit, self).focusOutEvent(event)
+        self.committed.emit()
+
+    def resizeEvent(self, event):
+        super(PromptEdit, self).resizeEvent(event)
+        self._fit_height()
+
+    def _fit_height(self):
+        """Size to the content (wrapped lines included), within the line limits."""
+        lines = int(self.document().documentLayout().documentSize().height())
+        lines = max(self.MIN_LINES, min(self.MAX_LINES, lines))
+        margin = int(self.document().documentMargin()) * 2 + 2 * self.frameWidth()
+        height = lines * self.fontMetrics().lineSpacing() + margin
+        if self.height() != height:
+            self.setFixedHeight(height)
+
+
 class GenFillPanel(QtWidgets.QWidget):
     """The widget returned to Nuke's PyCustom_Knob."""
 
@@ -258,14 +441,24 @@ class GenFillPanel(QtWidgets.QWidget):
         self.ctl = controller
         self._sig = None
         self._thumb_sig = None
+        self._cost_snap = None      # pricing snapshot of the current settings
+        self._cost_key = None
+        self._cost_due = None       # time.time() when the debounced fetch starts
+        self._was_running = False
+        self._auth_checked = 0.0
+        self._prompt_filled = None  # last seen "prompt is not empty" of the prompt field
         self.setObjectName("GenFillPanel")
         self.setStyleSheet(style.STYLESHEET)
         self._build()
         self.ctl.refresh()
         self._sync(force=True)
         self._timer = QtCore.QTimer(self)
-        self._timer.timeout.connect(self._sync)
+        self._timer.timeout.connect(self._tick)
         self._timer.start(POLL_MS)
+
+    def _tick(self):
+        self._sync()
+        self._poll_cost()
 
     # Nuke PyCustom_Knob protocol ---------------------------------------
     def makeUI(self):
@@ -307,15 +500,37 @@ class GenFillPanel(QtWidgets.QWidget):
         self.version.activated.connect(self._on_version)
         self.version.lineEdit().editingFinished.connect(self._on_version_typed)
         self._version_backend = None
+        self._version_label = None
+        self._discovery_note = ""
+        self._refresh_wanted = False
         head.addWidget(self.version)
-        self.local_btn = QtWidgets.QToolButton()
-        self.local_btn.setObjectName("gfIcon")
-        self.local_btn.setText(u"\u2699 Local AI...")
-        self.local_btn.setToolTip("Install, repair or check the free local AI "
-                                  "(also in GenFill > Local AI)")
-        self.local_btn.clicked.connect(self._on_local_ai)
-        head.addWidget(self.local_btn)
         root.addLayout(head)
+
+        # Quality and processing resolution (controllers without them hide the row)
+        self.options = QtWidgets.QWidget()
+        opts = QtWidgets.QHBoxLayout(self.options)
+        opts.setContentsMargins(0, 0, 0, 0)
+        opts.setSpacing(6)
+        self.quality = self._option_combo(
+            opts, "Quality", getattr(self.ctl, "quality_modes", lambda: [])(),
+            "Passed to models that offer it: GPT Image (OpenAI, fal, Magnific, Higgsfield),\n"
+            "Ideogram (fal, Magnific, Higgsfield), Higgsfield Hazel and Grok Image 2.0;\n"
+            "auto = model default.",
+            self._on_quality)
+        self.resolution = self._option_combo(
+            opts, "Resolution", getattr(self.ctl, "resolution_modes", lambda: [])(),
+            "Processing resolution: the size the crop is sent to the model at.\n"
+            "auto: each model's usual size (about 1 megapixel).\n"
+            "1K / 2K / 4K: about 1, 4 or 16 megapixels in the crop's aspect, never more "
+            "pixels than the crop has. Higher costs more.", self._on_resolution)
+        self.size_info = QtWidgets.QLabel("")
+        self.size_info.setObjectName("gfMuted")
+        self.size_info.setWordWrap(True)
+        self.size_info.setToolTip("Size the next Generate sends to the model (estimated from "
+                                  "the last selection, or the plate before the first one).")
+        opts.addWidget(self.size_info, 1)
+        self.options.setVisible(hasattr(self.ctl, "resolution"))
+        root.addWidget(self.options)
 
         # Contextual task bar
         bar = QtWidgets.QFrame()
@@ -341,13 +556,14 @@ class GenFillPanel(QtWidgets.QWidget):
         self.next_btn.setText(u"›")
         self.next_btn.setToolTip("Next variation")
         self.next_btn.clicked.connect(lambda: self.ctl.step(1))
-        self.prompt = QtWidgets.QLineEdit()
+        self.prompt = PromptEdit()
         self.prompt.setObjectName("gfPrompt")
         self.prompt.setPlaceholderText("Describe what you want to generate (optional)")
         self.prompt.setToolTip("Leave empty to remove the selected content and fill from "
-                               "the surroundings.\nEnter = Generate")
-        self.prompt.returnPressed.connect(self._on_generate)
-        self.prompt.editingFinished.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
+                               "the surroundings.\nCtrl+Enter = Generate, Enter = new line")
+        self.prompt.submitted.connect(self._on_generate)
+        self.prompt.committed.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
+        self.prompt.textChanged.connect(self._on_prompt_edited)
         self.generate_btn = QtWidgets.QPushButton("Generate")
         self.generate_btn.setObjectName("gfGenerate")
         self.generate_btn.setIcon(QtGui.QIcon(sparkle_pixmap(14, "#ffffff")))
@@ -362,8 +578,17 @@ class GenFillPanel(QtWidgets.QWidget):
         self.nav_sep.setStyleSheet("color: #444;")
         bl.addWidget(self.nav_sep)
         bl.addWidget(self.prompt, 1)
+        bl.setAlignment(self.prompt, Qt.AlignVCenter)
         bl.addWidget(self.generate_btn)
         root.addWidget(bar)
+
+        # Cost of the next Generate (and the credit balance where the provider has one)
+        self.cost_info = QtWidgets.QLabel("")
+        self.cost_info.setObjectName("gfMuted")
+        self.cost_info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.cost_info.setWordWrap(True)
+        self.cost_info.setVisible(False)
+        root.addWidget(self.cost_info)
 
         # Progress / status
         self.progress = QtWidgets.QProgressBar()
@@ -427,11 +652,30 @@ class GenFillPanel(QtWidgets.QWidget):
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.setMinimumWidth(3 * (THUMB_W + 12))
 
+    def _option_combo(self, layout, label, items, tip, slot):
+        lbl = QtWidgets.QLabel(label)
+        lbl.setObjectName("gfMuted")
+        layout.addWidget(lbl)
+        combo = QtWidgets.QComboBox()
+        combo.setObjectName("gfOption")
+        combo.addItems(items)
+        combo.setToolTip(tip)
+        combo.currentTextChanged.connect(slot)
+        layout.addWidget(combo)
+        return combo
+
     # events -----------------------------------------------------------------
     @_safe
-    def _on_local_ai(self, *args):
-        from . import localai_dialog
-        localai_dialog.show()
+    def _on_quality(self, value):
+        if value:
+            self.ctl.set_quality(value)
+            self._sync(force=True)
+
+    @_safe
+    def _on_resolution(self, value):
+        if value:
+            self.ctl.set_resolution(value)
+            self._sync(force=True)
 
     @_safe
     def _on_model(self, label):
@@ -442,6 +686,9 @@ class GenFillPanel(QtWidgets.QWidget):
     def _on_version(self, index):
         """A catalogue entry was picked: store its id ("" = backend default)."""
         data = self.version.itemData(index)
+        if data == REFRESH_ITEM:
+            self._refresh_models()
+            return
         self.ctl.set_model_version(data if data is not None else self.version.itemText(index))
 
     @_safe
@@ -450,15 +697,51 @@ class GenFillPanel(QtWidgets.QWidget):
         text = self.version.currentText().strip()
         idx = self.version.findText(text)
         if idx >= 0:
+            if self.version.itemData(idx) == REFRESH_ITEM:
+                self._show_version()
+                return
             text = self.version.itemData(idx) or ""
         self.ctl.set_model_version(text)
+
+    def _refresh_models(self):
+        """The "Refresh model list" entry: fetch the provider's list on a worker thread."""
+        self._refresh_wanted = True
+        self._discovery_note = ""
+        self.ctl.discover_models(force=True)
+        self._version_backend = None   # rebuild: the entry now reads "Refreshing..."
+        self._sync(force=True)
+        self._show_version(force=True)
+
+    def _discovery(self):
+        """``(can_discover, state)`` from controllers that support discovery."""
+        if not getattr(self.ctl, "can_discover", None) or not self.ctl.can_discover():
+            return False, {}
+        return True, self.ctl.discovery_state() or {}
+
+    def _check_refresh_done(self, state):
+        """After a forced refresh finishes, say what it found (or why it failed)."""
+        if not self._refresh_wanted or state.get("busy"):
+            return
+        self._refresh_wanted = False
+        if state.get("ok"):
+            new = int(state.get("new") or 0)
+            self._discovery_note = (
+                "Model list refreshed: %d new model%s." % (new, "s" * (new != 1)) if new
+                else "Model list refreshed: nothing new.")
+        else:
+            self._discovery_note = ("Could not refresh the model list: %s"
+                                    % (state.get("message") or "unknown error"))
 
     def _fill_version(self):
         """Rebuild the version items for the current backend and show gf_model."""
         default, entries = self.ctl.model_catalogue()
-        key = (self.ctl.backend_label(), default, tuple(e[0] for e in entries))
+        can, state = self._discovery()
+        busy = bool(state.get("busy"))
+        key = (self.ctl.backend_label(), default, tuple(e[:2] for e in entries), can, busy)
         if key != self._version_backend:
+            backend_changed = key[0] != self._version_label
             self._version_backend = key
+            self._version_label = key[0]
             self.version.blockSignals(True)
             self.version.clear()
             self.version.addItem("Default (%s)" % default if default else "Default", "")
@@ -466,8 +749,25 @@ class GenFillPanel(QtWidgets.QWidget):
                 self.version.addItem(label, mid)
                 if note:
                     self.version.setItemData(self.version.count() - 1, note, Qt.ToolTipRole)
+            if can:
+                self.version.insertSeparator(self.version.count())
+                self.version.addItem(u"Refreshing model list\u2026" if busy
+                                     else u"Refresh model list\u2026", REFRESH_ITEM)
+                self.version.setItemData(self.version.count() - 1, _refresh_tip(state),
+                                         Qt.ToolTipRole)
             self.version.blockSignals(False)
-        if self.version.lineEdit().hasFocus():
+            if backend_changed:
+                self._discovery_note = ""
+                self._refresh_wanted = False
+                if can:
+                    self.ctl.discover_models(force=False)   # lazily, at most once a day
+        if can:
+            self._check_refresh_done(state)
+        self._show_version()
+
+    def _show_version(self, force=False):
+        """Show the gf_model value in the combo (not while the artist types)."""
+        if self.version.lineEdit().hasFocus() and not force:
             return
         current = self.ctl.model_version()
         idx = self.version.findData(current)
@@ -485,8 +785,8 @@ class GenFillPanel(QtWidgets.QWidget):
         if self.ctl.status().get("running"):
             self.ctl.cancel()
             return
-        text = self.prompt.text()
-        self.ctl.set_prompt(text)
+        self.ctl.set_prompt(self.prompt.text())
+        self._discovery_note = ""
         # Immediate feedback: preparing the crop renders on the main thread.
         self._local_error = ""
         self.status.setObjectName("gfMuted")
@@ -495,7 +795,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self.generate_btn.setEnabled(False)
         QtWidgets.QApplication.processEvents()
         try:
-            self.ctl.generate(text)
+            self.ctl.generate(self.prompt.text())
         finally:
             self.generate_btn.setEnabled(True)
         self._sync(force=True)
@@ -558,7 +858,8 @@ class GenFillPanel(QtWidgets.QWidget):
         if not self.ctl.alive():
             self._timer.stop() if hasattr(self, "_timer") else None
             return
-        sig = self.ctl.signature()
+        revision = getattr(self.ctl, "discovery_revision", None)
+        sig = (self.ctl.signature(), revision() if revision else None)
         if sig == self._sig and not force:
             return
         self._sig = sig
@@ -571,7 +872,7 @@ class GenFillPanel(QtWidgets.QWidget):
             self.model.blockSignals(False)
         self.model.setToolTip(self.ctl.backend_description())
         self._fill_version()
-        self.local_btn.setVisible(label.startswith("Local"))
+        self._sync_options()
 
         # prompt (don't fight the user while typing)
         if not self.prompt.hasFocus() and self.prompt.text() != self.ctl.prompt():
@@ -591,7 +892,8 @@ class GenFillPanel(QtWidgets.QWidget):
             self.status.setText(st.get("error") or self._local_error)
         else:
             self.status.setObjectName("gfMuted")
-            self.status.setText(st.get("message", "") if (running or st.get("message")) else "")
+            message = st.get("message", "") if (running or st.get("message")) else ""
+            self.status.setText(message or self._discovery_note)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.status.setVisible(bool(self.status.text()))
@@ -620,6 +922,102 @@ class GenFillPanel(QtWidgets.QWidget):
         else:
             self.footer.setText("")
         self.footer.setVisible(idx >= 0)
+
+    def _sync_options(self):
+        """Quality / Resolution combos from the node, plus the size the model gets."""
+        if not hasattr(self.ctl, "resolution"):
+            return
+        for combo, value in ((self.quality, self.ctl.quality()),
+                             (self.resolution, self.ctl.resolution())):
+            if combo.currentText() != value:
+                combo.blockSignals(True)
+                combo.setCurrentText(value)
+                combo.blockSignals(False)
+        try:
+            text = self.ctl.size_text()
+        except Exception as exc:   # never break the panel over an estimate
+            text = ""
+            try:
+                from .. import log as gflog
+                gflog.warning("size estimate failed: %s", exc)
+            except Exception:
+                pass
+        self.size_info.setText(text)
+        self._cost_settings()
+
+    # cost -------------------------------------------------------------------
+    @_safe
+    def _on_prompt_edited(self):
+        """Typing into an empty prompt (or clearing it) switches erase/inpaint pricing."""
+        filled = bool(self.prompt.text().strip())
+        if filled != self._prompt_filled:
+            self._prompt_filled = filled
+            self._cost_settings()
+
+    def _cost_settings(self):
+        """Settings changed: take a new snapshot; a new price key is fetched debounced."""
+        if not hasattr(self.ctl, "cost_snapshot"):
+            return
+        try:
+            snap = self.ctl.cost_snapshot(self.prompt.text())
+        except Exception as exc:   # never break the panel over a cost estimate
+            snap = None
+            self._log_cost_error(exc)
+        from .. import pricing
+        key = pricing.key(snap) if snap is not None else None
+        self._cost_snap = snap
+        if key != self._cost_key:
+            self._cost_key = key
+            self._cost_due = time.time() + COST_DEBOUNCE if key is not None else None
+
+    def _poll_cost(self):
+        """Timer: start a due fetch, refresh the balance after a generation, show the line."""
+        if not hasattr(self.ctl, "cost_snapshot"):
+            return
+        try:
+            running = bool(self.ctl.status().get("running"))
+            if self._was_running and not running:
+                self.ctl.forget_balance()          # the generation spent credits
+                self._cost_due = time.time()
+            self._was_running = running
+            now = time.time()
+            if (self._cost_snap is not None and hasattr(self.ctl, "cost_auth")
+                    and now - self._auth_checked >= AUTH_CHECK):
+                self._auth_checked = now
+                if self.ctl.cost_auth() != self._cost_snap.get("auth"):
+                    self._cost_settings()          # signed in / key entered: new cache key
+            snap = self._cost_snap
+            if snap is None:
+                self.cost_info.setVisible(False)
+                return
+            if self._cost_due is not None and now >= self._cost_due:
+                self._cost_due = None
+            if self._cost_due is None and not running:
+                # Every tick: a no-op while cached, so expired errors and balances refresh.
+                self.ctl.request_cost(snap)
+            text, tip = self.ctl.cost_text(snap)
+            text = text or u"estimating cost\u2026"    # debouncing a new setting
+        except Exception as exc:
+            self._log_cost_error(exc)
+            text, tip = "cost unknown", str(exc)
+        if self.cost_info.text() != text:
+            self.cost_info.setText(text)
+        tip = ("Estimated cost of the next Generate with the current model, resolution, "
+               "quality and number of variations." + ("\n" + tip if tip else ""))
+        if self.cost_info.toolTip() != tip:
+            self.cost_info.setToolTip(tip)
+        self.cost_info.setVisible(bool(text))
+
+    def _log_cost_error(self, exc):
+        key = str(exc)
+        if key == getattr(self, "_last_cost_error", None):
+            return
+        self._last_cost_error = key
+        try:
+            from .. import log as gflog
+            gflog.warning("cost preview failed: %s", exc)
+        except Exception:
+            pass
 
     def _rebuild_grid(self, thumbs):
         while self.grid.count():

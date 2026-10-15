@@ -20,7 +20,9 @@ import os
 import tempfile
 import threading
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".nuke", "genfill")
+# GENFILL_CONFIG_DIR moves config.json and the model cache (tests use a temp dir).
+CONFIG_DIR = (os.environ.get("GENFILL_CONFIG_DIR", "").strip()
+              or os.path.join(os.path.expanduser("~"), ".nuke", "genfill"))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 _lock = threading.RLock()
@@ -135,3 +137,59 @@ def variation_pattern():
     from .naming import DEFAULT_VARIATION
     return (_env("GENFILL_VARIATION_NAME") or (load().get("variation_pattern") or "").strip()
             or DEFAULT_VARIATION)
+
+
+DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
+
+
+def normalize_comfyui_url(url):
+    """Trim ``url`` and prepend ``http://`` when it has no scheme (``192.168.1.20:8188``).
+
+    Args:
+        url: The URL as typed or stored; may be empty.
+
+    Returns:
+        The cleaned URL without a trailing slash, or "" for an empty value.
+    """
+    url = (url or "").strip().rstrip("/")
+    if url and "://" not in url:
+        url = "http://" + url
+    return url
+
+
+def comfyui_url():
+    """ComfyUI server URL: ``GENFILL_COMFY_URL``, then ``comfyui.url`` in config, then local."""
+    url = _env("GENFILL_COMFY_URL") or str((load().get("comfyui") or {}).get("url") or "").strip()
+    return normalize_comfyui_url(url) or DEFAULT_COMFY_URL
+
+
+def comfyui_token():
+    """Bearer token for a protected ComfyUI: ``GENFILL_COMFY_TOKEN``, then the stored key."""
+    return get_api_key("comfyui", "GENFILL_COMFY_TOKEN")
+
+
+def comfyui_workflow_dirs():
+    """Workflow folders: the bundled one, the configured ones, then ``GENFILL_COMFY_WORKFLOWS``."""
+    from .backends.comfy_workflows import REPO_DIR
+    configured = (load().get("comfyui") or {}).get("workflow_dirs") or []
+    dirs = [REPO_DIR] + [str(d).strip() for d in configured if str(d).strip()]
+    dirs += [d.strip() for d in _env("GENFILL_COMFY_WORKFLOWS").split(os.pathsep) if d.strip()]
+    return dirs
+
+
+def set_comfyui(url=None, workflow_dirs=None):
+    """Store the ComfyUI settings; ``None`` leaves a value alone, empty clears it."""
+    def edit(data):
+        section = data.setdefault("comfyui", {})
+        if url is not None:
+            if url.strip():
+                section["url"] = normalize_comfyui_url(url)
+            else:
+                section.pop("url", None)
+        if workflow_dirs is not None:
+            dirs = [str(d).strip() for d in workflow_dirs if str(d).strip()]
+            if dirs:
+                section["workflow_dirs"] = dirs
+            else:
+                section.pop("workflow_dirs", None)
+    update(edit)

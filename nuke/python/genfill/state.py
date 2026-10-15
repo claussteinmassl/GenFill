@@ -19,6 +19,7 @@ State layout::
           "format": [1920, 1080],
           "region": [x, y, w, h],        # Nuke pixels, bottom-left origin
           "model_size": [w, h],
+          "resolution": "2K",            # requested setting (auto, 1K, 2K, 4K); 0.9.0+
           "files": ["g001_.../var_01.png", ...],
           "created": "2026-10-12T20:15:00"
         }
