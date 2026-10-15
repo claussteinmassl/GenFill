@@ -62,7 +62,8 @@ class Env(unittest.TestCase):
         for p in (mock.patch.object(cc.McpBackend, "client", lambda s, *a, **k: self.client),
                   mock.patch.object(cc, "put_bytes", put),
                   mock.patch.object(cc, "download", lambda u: PNG),
-                  mock.patch.object(cloud.time, "sleep", lambda s: None)):
+                  mock.patch.object(cloud.time, "sleep", lambda s: None),
+                  mock.patch("genfill.log.warning")):
             p.start()
             self.addCleanup(p.stop)
 
@@ -242,6 +243,67 @@ class TestGenerate(Env):
         with mock.patch.object(cc.time, "sleep", lambda s: sleeps.append(s)):
             self.b.generate(self.req(), "k")
         self.assertGreaterEqual(len(sleeps), 4)
+
+    def test_upload_sends_neutral_path_and_darwin(self):
+        with mock.patch.object(cc.sys, "platform", "win32"):
+            self.b.generate(self.req(), "k")
+        calls = self.called("upload_file")
+        self.assertEqual(len(calls), 2)
+        folder = os.path.dirname(self.img)
+        for a in calls:
+            self.assertEqual(a["client_os"], "darwin")
+            self.assertTrue(a["file_path"].startswith("/genfill/"))
+            self.assertNotIn(folder, a["file_path"])
+        self.assertEqual([a["file_path"] for a in calls], ["/genfill/i.png", "/genfill/m.png"])
+        self.assertEqual(self.b.upload(self.client, "C:\\Users\\artist\\job\\p.png", PNG)["name"],
+                         "n3.png")
+        self.assertEqual(self.called("upload_file")[-1]["file_path"], "/genfill/p.png")
+
+    def test_one_failed_download_keeps_the_others(self):
+        def dl(url):
+            if url.endswith("/1"):
+                raise BackendError("Could not download the result")
+            return PNG
+        with mock.patch.object(cc, "download", dl):
+            self.assertEqual(len(self.b.generate(self.req(), "k")), 2)
+        with mock.patch.object(cc, "download", lambda u: b"<html>"):
+            with self.assertRaises(BackendError) as cm:
+                self.b.generate(self.req(), "k")
+        self.assertIn("isn't an image", str(cm.exception))
+
+    def test_partner_failure_keeps_earlier_variations(self):
+        answers = [{"results": [{"url": "https://x/s/1"}]},
+                   {"result": {"status": "tool_error", "message": "no credits"}},
+                   {"results": [{"url": "https://x/s/3"}]}]
+        self.tools["partner_generate"] = lambda a: answers.pop(0)
+        out = self.b.generate(self.req(model="nano-banana-2", count=3), "k")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(len(self.called("partner_generate")), 2)   # stops after the failure
+        self.tools["partner_generate"] = {"result": {"status": "tool_error",
+                                                     "message": "no credits"}}
+        with self.assertRaises(BackendError) as cm:
+            self.b.generate(self.req(model="nano-banana-2", count=2), "k")
+        self.assertIn("no credits", str(cm.exception))
+
+    def test_poll_timeout_cancels_job(self):
+        self.tools["wait_for_job"] = {"result": {"timed_out": True}}
+        with mock.patch.object(cc, "MAX_JOB_SECONDS", -1):
+            with self.assertRaises(BackendError) as cm:
+                self.b.generate(self.req(), "k")
+        self.assertIn("Timed out", str(cm.exception))
+        self.assertEqual(self.called("cancel_job"), [{"prompt_id": "p1"}])
+
+    def test_failed_job_is_not_cancelled(self):
+        self.job = {"result": {"job_status": "failed", "message": "node blew up"}}
+        with self.assertRaises(BackendError):
+            self.b.generate(self.req(), "k")
+        self.assertEqual(self.called("cancel_job"), [])
+
+    def test_uncancellable_copy_keeps_original_hook(self):
+        client = mcp.McpClient("http://127.0.0.1:1/mcp", cancelled=lambda: True)
+        other = cc._uncancellable(client)
+        self.assertIsNone(other.ctx["cancelled"])
+        self.assertIsNotNone(client.ctx["cancelled"])
 
     def test_kontext_model_size_matches_aspect(self):
         w, h = self.b.model_size(1000, 700, "flux-kontext-pro")

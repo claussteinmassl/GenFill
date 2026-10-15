@@ -9,11 +9,18 @@
 
 Files go up through ``upload_file``: the server hands back a single-use PUT URL (the file
 path is only templated into a curl command, the server never reads it), we PUT the bytes
-there without auth and keep the returned ``name``. Results come from short-lived public links
-that redirect to signed storage URLs; they are downloaded right away.
+there without auth and keep the returned ``name``. GenFill always asks for the macOS command
+(the only reply format verified live) with a neutral ``/genfill/<file name>`` path, so the
+artist's folders never reach the server. Results come from short-lived public links that
+redirect to signed storage URLs; they are downloaded right away.
+
+Paid results follow the shared policy in ``cloud``: every downloaded image is kept even if a
+sibling variation failed, and a job GenFill stops waiting for (cancel, timeout, error) gets a
+``cancel_job``.
 """
 from __future__ import annotations
 
+import copy
 import json
 import random
 import re
@@ -22,7 +29,7 @@ import time
 
 from .base import (EDIT_EMPTY_PROMPT, BackendError, Cancelled, ModelSpec,
                    check_image, download)
-from .cloud import McpBackend, poll, put_bytes, ref_prompt
+from .cloud import McpBackend, collect, finish, poll, put_bytes, ref_prompt
 from .. import region
 
 MAX_SEED = 2147483646
@@ -67,8 +74,15 @@ PARTNER_SLUGS = {
 }
 
 
+UPLOAD_CLIENT_OS = "darwin"   # upload_file reply format verified live (see module docstring)
+
+
+class _JobFailed(BackendError):
+    """The job itself ended in error or was cancelled on the server: nothing left to cancel."""
+
+
 def client_os():
-    """``darwin`` / ``windows`` / ``linux``, as ``upload_file`` and ``get_output`` expect."""
+    """``darwin`` / ``windows`` / ``linux``, as ``get_output`` and ``partner_generate`` expect."""
     if sys.platform.startswith("win"):
         return "windows"
     return "darwin" if sys.platform == "darwin" else "linux"
@@ -140,6 +154,16 @@ def _flat(res):
 def _fail_text(info):
     return str(info.get("message") or info.get("error") or info.get("detail")
                or info.get("error_type") or "unknown error")[:400]
+
+
+def _uncancellable(client):
+    """A copy of ``client`` without the cancel hook, to send ``cancel_job`` after a cancel."""
+    ctx = getattr(client, "ctx", None)
+    if not isinstance(ctx, dict):
+        return client
+    other = copy.copy(client)
+    other.ctx = dict(ctx, cancelled=None, interactive=False)
+    return other
 
 
 def _check_tool(res, what):
@@ -251,12 +275,18 @@ class ComfyCloudBackend(McpBackend):
         self._wait(client, pid, cancelled, step)
         check()
         urls = self._output_urls(client, pid)
-        return self._download(urls, step, check)
+        errors = []
+        return finish(self._download(urls, step, cancelled, errors), errors, "Comfy Cloud")
 
     def upload(self, client, local_path, data):
-        """Upload bytes through ``upload_file``; returns ``{"name", "subfolder", "path"}``."""
-        res = client.call_tool("upload_file", {"file_path": local_path,
-                                               "client_os": client_os()})
+        """Upload bytes through ``upload_file``; returns ``{"name", "subfolder", "path"}``.
+
+        The server only templates ``file_path`` into a shell command it never runs, so a
+        neutral absolute path stands in for the local one.
+        """
+        name = re.split(r"[\\/]", local_path)[-1] or "genfill.png"
+        res = client.call_tool("upload_file", {"file_path": "/genfill/" + name,
+                                               "client_os": UPLOAD_CLIENT_OS})
         url, ctype = parse_upload_url(res)
         body = put_bytes(url, data, ctype)
         try:
@@ -276,9 +306,9 @@ class ComfyCloudBackend(McpBackend):
             if state in ("completed", "succeeded"):
                 return info
             if state in ("error", "failed", "cancelled"):
-                raise BackendError("Comfy Cloud job %s: %s"
-                                   % ("was cancelled" if state == "cancelled" else "failed",
-                                      _fail_text(info)))
+                raise _JobFailed("Comfy Cloud job %s: %s"
+                                 % ("was cancelled" if state == "cancelled" else "failed",
+                                    _fail_text(info)))
             step(0.4, "Generating on Comfy Cloud...")
             if not info.get("timed_out"):
                 _pause(1.5, cancelled)   # the server answered without holding the request
@@ -287,13 +317,11 @@ class ComfyCloudBackend(McpBackend):
         try:
             return poll(once, cancelled, timeout=MAX_JOB_SECONDS, interval=0,
                         what="Comfy Cloud")
-        except Cancelled:
-            # The client's own cancel hook would refuse this call, so lift it first.
-            ctx = getattr(client, "ctx", None)
-            if isinstance(ctx, dict):
-                ctx["cancelled"] = None
+        except _JobFailed:
+            raise
+        except Exception:   # cancel, timeout or a failed wait: the job may still be running
             try:
-                client.call_tool("cancel_job", {"prompt_id": prompt_id})
+                _uncancellable(client).call_tool("cancel_job", {"prompt_id": prompt_id})
             except BackendError:
                 pass
             raise
@@ -311,19 +339,19 @@ class ComfyCloudBackend(McpBackend):
             raise BackendError("Comfy Cloud finished but returned no images.")
         return urls
 
-    def _download(self, urls, step, check):
-        out = []
-        for i, url in enumerate(urls):
-            check()
+    def _download(self, urls, step, cancelled, errors):
+        """Download and validate ``urls``; failures go to ``errors``, the rest is returned."""
+        def one(item):
+            i, url = item
             step(0.7 + 0.3 * i / len(urls), "Downloading result %d of %d..." % (i + 1, len(urls)))
-            out.append(check_image(download(url), "Comfy Cloud"))
-        return out
+            return check_image(download(url), "Comfy Cloud")
+        return collect(list(enumerate(urls)), one, cancelled, errors)[0]
 
     # ---- partner edit models ------------------------------------------------
     def _partner(self, client, spec, request, plate, base_seed, step, check, cancelled):
         slug = PARTNER_SLUGS.get(spec.id) or spec.id
         prompt = ref_prompt(request.prompt)
-        out = []
+        out, errors = [], []
         for i in range(request.count):
             check()
             step(0.1 + 0.6 * i / request.count,
@@ -336,17 +364,26 @@ class ComfyCloudBackend(McpBackend):
             if "kontext" in slug:
                 args["params"] = {"aspect_ratio": _closest_aspect(request.width,
                                                                   request.height)}
-            info = _check_tool(client.call_tool("partner_generate", args, timeout=120),
-                               "generation")
-            if not [r for r in info.get("results") or [] if isinstance(r, dict) and r.get("url")]:
-                pid = info.get("prompt_id")
-                if not pid:
-                    raise BackendError("Comfy Cloud returned no result.")
-                self._wait(client, pid, cancelled, step)
-                urls = self._output_urls(client, pid)[:1]
-            else:
-                urls = self._result_urls(info)[:1]
+            try:
+                urls = self._partner_once(client, args, cancelled, step)
+            except Cancelled:
+                raise
+            except BackendError as exc:
+                errors.append(str(exc))   # keep the variations already paid for
+                break
             # Download now: the shortlinks only live a few minutes.
-            out += self._download(urls, step, check)
-        return out
+            out += self._download(urls, step, cancelled, errors)
+        return finish(out, errors, "Comfy Cloud")
+
+    def _partner_once(self, client, args, cancelled, step):
+        """One ``partner_generate`` variation; returns its result URL list (one entry)."""
+        info = _check_tool(client.call_tool("partner_generate", args, timeout=120),
+                           "generation")
+        if [r for r in info.get("results") or [] if isinstance(r, dict) and r.get("url")]:
+            return self._result_urls(info)[:1]
+        pid = info.get("prompt_id")
+        if not pid:
+            raise BackendError("Comfy Cloud returned no result.")
+        self._wait(client, pid, cancelled, step)
+        return self._output_urls(client, pid)[:1]
 

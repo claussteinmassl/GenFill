@@ -8,11 +8,14 @@ Two routes, both on the artist's Magnific credits:
   back through the selection). One call returns ``count`` images and takes a seed.
 
 Plate and mask are uploaded once (presigned PUT + finalize) and shared by all variations.
+Magnific has no cancel tool: a queued job is billed even if GenFill stops waiting for it, so
+every finished image is returned even when sibling jobs failed (see ``cloud``).
 """
 from __future__ import annotations
 
 from .base import BackendError, Cancelled, ModelSpec, check_image, download
-from .cloud import McpBackend, poll, progress_step, put_bytes, ref_prompt
+from .cloud import (McpBackend, collect, finish, pause, poll, progress_step, put_bytes,
+                    ref_prompt)
 from .. import region
 
 SERVER_URL = "https://mcp.magnific.com"
@@ -20,6 +23,7 @@ PIXEL_BUDGET = 1024 * 1024
 MAX_WAIT_IDS = 8       # creations_wait takes at most 8 identifiers
 WAIT_SECONDS = 25      # longest long-poll creations_wait allows
 PENDING = ("queued", "processing")
+MIN_PAUSE, MAX_PAUSE = 1.0, 5.0   # between creations_wait rounds that brought no progress
 
 # aspectRatio enum of images_generate (models without customSize snap to one of these).
 ASPECT_RATIOS = ("1:1", "21:9", "16:9", "9:16", "2:3", "3:4", "1:2", "2:1", "5:4", "4:5",
@@ -103,16 +107,16 @@ class MagnificBackend(McpBackend):
         progress_step(progress, 0.02, "Uploading to Magnific...")
         plate_id, mask_id = self._upload(client, request, check)
         check()
+        errors = []
         if spec.kind == "inpaint":
-            ids = self._submit_retouch(client, spec, request, plate_id, mask_id, count, check)
+            ids = self._submit_retouch(client, spec, request, plate_id, mask_id, count, check,
+                                       errors)
         else:
             ids = self._submit_edit(client, spec, request, plate_id, count)
-        urls = self._wait(client, ids, progress, cancelled)
-        results = []
-        for url in urls:
-            check()
-            results.append(check_image(download(url), "Magnific"))
-        return results
+        urls = self._wait(client, ids, progress, cancelled, errors)
+        images, _ = collect(urls, lambda url: check_image(download(url), "Magnific"),
+                            cancelled, errors)
+        return finish(images, errors, "Magnific")
 
     def _upload(self, client, request, check):
         """Upload plate and mask; returns their creation identifiers."""
@@ -138,7 +142,8 @@ class MagnificBackend(McpBackend):
                                % _trim(res.get("errors") or res))
         return done[0]["identifier"], done[1]["identifier"]
 
-    def _submit_retouch(self, client, spec, request, plate_id, mask_id, count, check):
+    def _submit_retouch(self, client, spec, request, plate_id, mask_id, count, check, errors):
+        """Queue one retouch job per variation; a failure keeps the jobs already queued."""
         prompt = request.prompt.strip()
         erase = not prompt or spec.extra.get("erase_only")
         model = (spec.erase or spec.id) if erase else spec.id
@@ -152,18 +157,28 @@ class MagnificBackend(McpBackend):
         ids = []
         for i in range(count):
             check()
-            res = _call(client, "images_retouch", args)
-            creation = res.get("creation")
-            if not isinstance(creation, dict) or not creation.get("identifier"):
-                raise BackendError("Magnific did not queue the retouch job: %s" % _trim(res))
+            try:
+                res = _call(client, "images_retouch", args)
+                creation = res.get("creation")
+                if not isinstance(creation, dict) or not creation.get("identifier"):
+                    raise BackendError("Magnific did not queue the retouch job: %s"
+                                       % _trim(res))
+            except Cancelled:
+                raise
+            except BackendError as exc:
+                if not ids:
+                    raise
+                errors.append(str(exc))
+                break
             ids.append(creation["identifier"])
         return ids
 
     def _submit_edit(self, client, spec, request, plate_id, count):
         args = {"prompt": ref_prompt(request.prompt), "mode": spec.id, "count": count,
                 "references": [{"type": "image", "identifier": plate_id}]}
-        if request.seed:
-            args["seed"] = request.seed
+        seed = request.seed & 0xFFFFFFFF    # images_generate takes 0..4294967295
+        if seed:
+            args["seed"] = seed
         if spec.extra.get("custom_size"):
             args["width"], args["height"] = request.width, request.height
         else:
@@ -177,37 +192,67 @@ class MagnificBackend(McpBackend):
             raise BackendError("Magnific did not queue the image job: %s" % _trim(res))
         return ids
 
-    def _wait(self, client, ids, progress, cancelled):
-        """Long-poll ``creations_wait`` until every job finished; returns result URLs in order."""
-        urls = {}
+    def _wait(self, client, ids, progress, cancelled, errors):
+        """Long-poll ``creations_wait`` until every job is terminal.
+
+        Returns the result URLs of the completed jobs in submission order; failed jobs (and a
+        wait that gives up early) add a message to ``errors`` instead of discarding the rest.
+        """
+        urls, failed = {}, set()
 
         def step():
-            pending = [i for i in ids if i not in urls]
+            pending = [i for i in ids if i not in urls and i not in failed]
             res = _call(client, "creations_wait",
                         {"identifiers": pending[:MAX_WAIT_IDS], "timeoutSeconds": WAIT_SECONDS},
                         timeout=WAIT_SECONDS + 30)
+            before = len(urls) + len(failed)
+            after_s = 0.0
             for entry in res.get("results") or []:
-                if not isinstance(entry, dict):
+                if not isinstance(entry, dict) or entry.get("identifier") not in pending:
                     continue
+                ident = entry["identifier"]
                 status = str(entry.get("status") or "").lower()
-                if status == "completed":
-                    url = (entry.get("results") or {}).get("url")
-                    if not url:
-                        raise BackendError("Magnific finished without a result image.")
-                    urls[entry.get("identifier")] = url
+                url = (entry.get("results") or {}).get("url")
+                if status == "completed" and url:
+                    urls[ident] = url
+                elif status == "completed":
+                    failed.add(ident)
+                    errors.append("Magnific finished without a result image.")
                 elif status not in PENDING:
-                    raise BackendError("Magnific could not generate the image (%s). %s" % (
+                    failed.add(ident)
+                    errors.append("Magnific could not generate the image (%s). %s" % (
                         status or "unknown status",
                         _trim(entry.get("error") or entry.get("message") or "")))
+                else:
+                    after_s = max(after_s, _number(entry.get("poll_after_seconds")))
             progress_step(progress, 0.1 + 0.8 * len(urls) / float(len(ids)),
                           "Magnific: %d of %d done..." % (len(urls), len(ids)))
-            return True if all(i in urls for i in ids) else None
+            if len(urls) + len(failed) == len(ids):
+                return True
+            if len(urls) + len(failed) == before:
+                # No progress: never hammer the server if the long-poll answers at once.
+                pause(min(max(after_s, MIN_PAUSE), MAX_PAUSE), cancelled)
+            return None
 
-        poll(step, cancelled, timeout=900, interval=0, what="Magnific")
-        return [urls[i] for i in ids]
+        try:
+            poll(step, cancelled, timeout=900, interval=0, what="Magnific")
+        except Cancelled:
+            raise
+        except BackendError as exc:
+            if not urls:
+                raise
+            errors.append(str(exc))   # keep the finished (billed) images
+        return [urls[i] for i in ids if i in urls]
 
 
 CATALOGUE_BY_ID = dict((m.id, m) for m in CATALOGUE)
+
+
+def _number(value):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _trim(value, limit=300):

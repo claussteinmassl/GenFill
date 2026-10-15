@@ -106,6 +106,9 @@ class FalTests(unittest.TestCase):
         patcher = mock.patch.object(fal.time, "sleep")
         self.sleep = patcher.start()
         self.addCleanup(patcher.stop)
+        quiet = mock.patch("genfill.log.warning")   # partial-result notes
+        quiet.start()
+        self.addCleanup(quiet.stop)
 
     def plate(self):
         with open(self.paths["image"], "rb") as fh:
@@ -368,6 +371,106 @@ class FalTests(unittest.TestCase):
             with self.assertRaisesRegex(base.BackendError, "too long"):
                 self.run_fal(fake)
         self.assertEqual(len(fake.find("PUT", "/cancel")), 1)
+
+    # ------------------------------------------------------- partial results
+
+    def _two_jobs(self, script):
+        """FakeFal whose status answers come from ``script[request_id]`` (a list per job)."""
+        fake = FakeFal()
+        orig = fake.__call__
+
+        def call(method, url, *a, **k):
+            if url.split("?")[0].endswith("/status"):
+                fake.calls.append({"method": method, "url": url, "body": None, "headers": {}})
+                rid = url.split("/requests/")[1].split("/")[0]
+                steps = script[rid]
+                step = steps.pop(0) if len(steps) > 1 else steps[0]
+                if isinstance(step, Exception):
+                    raise step
+                if isinstance(step, int):
+                    return step, {}, b'{"detail": "busy"}'
+                return 200, {}, json.dumps(step).encode("utf-8")
+            return orig(method, url, *a, **k)
+        call.fake = fake
+        return call
+
+    def test_one_failed_job_returns_the_others(self):
+        # uploads take r1/r2 of the counter (cdn), the two queue requests are r3 and r4
+        run = self._two_jobs({"r3": [{"status": "COMPLETED", "error": "boom"}],
+                              "r4": [{"status": "IN_PROGRESS"}, {"status": "COMPLETED"}]})
+        out = self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(run.fake.find("PUT", "/cancel"), [])
+
+    def test_all_jobs_failed_raises_combined(self):
+        run = self._two_jobs({"r3": [{"status": "COMPLETED", "error": "boom"}],
+                              "r4": [{"status": "COMPLETED", "error": "bang"}]})
+        with self.assertRaisesRegex(base.BackendError, "boom.*bang"):
+            self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+
+    def test_transient_poll_errors_are_retried(self):
+        net = base.BackendError("Network error talking to queue.fal.run: reset")
+        run = self._two_jobs({"r3": [503, 429, net, {"status": "COMPLETED"}],
+                              "r4": [{"status": "COMPLETED"}]})
+        out = self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+        self.assertEqual(len(out), 2)
+        # ... but not forever: that job gives up, the other one still delivers
+        run = self._two_jobs({"r3": [503], "r4": [{"status": "COMPLETED"}]})
+        out = self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+        self.assertEqual(len(out), 1)
+
+    def test_unexpected_error_cancels_every_running_job(self):
+        run = self._two_jobs({"r3": [{"status": "IN_PROGRESS"}, RuntimeError("bug")],
+                              "r4": [{"status": "IN_PROGRESS"}]})
+        with self.assertRaises(RuntimeError):
+            self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+        puts = sorted(c["url"] for c in run.fake.find("PUT", "/cancel"))
+        self.assertEqual(len(puts), 2)
+        self.assertTrue(puts[0].endswith("/r3/cancel") and puts[1].endswith("/r4/cancel"))
+
+    def test_cancel_cancels_every_running_job(self):
+        run = self._two_jobs({"r3": [{"status": "IN_PROGRESS"}], "r4": [{"status": "IN_PROGRESS"}]})
+        state = {"n": 0}
+
+        def cancelled():
+            state["n"] += 1
+            return state["n"] > 6
+        with self.assertRaises(base.Cancelled):
+            self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2,
+                         cancelled=cancelled)
+        self.assertEqual(len(run.fake.find("PUT", "/cancel")), 2)
+
+    def test_timeout_keeps_finished_and_cancels_the_rest(self):
+        run = self._two_jobs({"r3": [{"status": "COMPLETED"}], "r4": [{"status": "IN_QUEUE"}]})
+        times = iter([0, 0, 10 ** 6, 10 ** 6, 10 ** 6, 10 ** 6])
+        with mock.patch.object(fal.time, "monotonic", lambda: next(times)):
+            out = self.run_fal(run, model="fal-ai/flux-pro/v1/erase", prompt="", count=2)
+        self.assertEqual(len(out), 1)
+        puts = run.fake.find("PUT", "/cancel")
+        self.assertEqual(len(puts), 1)
+        self.assertTrue(puts[0]["url"].endswith("/r4/cancel"))
+
+    def test_failed_second_submit_keeps_the_first(self):
+        fake = FakeFal()
+        orig = fake.__call__
+        submits = []
+
+        def call(method, url, *a, **k):
+            if method == "POST" and url.startswith(fal.QUEUE_ROOT + "/"):
+                submits.append(url)
+                if len(submits) == 2:
+                    return 500, {}, b'{"detail": "overloaded"}'
+            return orig(method, url, *a, **k)
+        out = self.run_fal(call, model="fal-ai/flux-pro/v1/erase", prompt="", count=3)
+        self.assertEqual(len(submits), 2)   # no third submit after the failure
+        self.assertEqual(len(out), 1)
+
+    def test_one_failed_download_keeps_the_others(self):
+        fake = FakeFal(result={"images": [{"url": "https://v3b.fal.media/out/a.png"},
+                                          {"url": "https://v3b.fal.media/out/b.png"}]})
+        fake.downloads["https://v3b.fal.media/out/a.png"] = b"<html>not an image"
+        out = self.run_fal(fake, count=2)
+        self.assertEqual(len(out), 1)
 
     def test_missing_key(self):
         with self.assertRaisesRegex(base.BackendError, "FAL_KEY"):

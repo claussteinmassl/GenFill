@@ -16,7 +16,7 @@ import random
 import time
 
 from .base import BackendError, Cancelled, ModelSpec, check_image, download
-from .cloud import McpBackend, poll, progress_step, put_bytes, ref_prompt
+from .cloud import McpBackend, collect, finish, poll, progress_step, put_bytes, ref_prompt
 from .. import region
 
 MAX_SEED = 2147483647
@@ -139,17 +139,16 @@ class HiggsfieldBackend(McpBackend):
         jobs = self._submitted(out)
         check()
 
-        results = self._wait(client, jobs, progress, cancelled)
-        images = []
-        for n, job in enumerate(results):
-            check()
-            if job.get("status") != "completed" or not job.get("result_url"):
-                continue
-            images.append(check_image(download(job["result_url"]), "Higgsfield"))
-            progress_step(progress, 0.9 + 0.1 * (n + 1) / len(results), "Downloading results...")
-        if not images:
+        errors = []
+        results = self._wait(client, jobs, progress, cancelled, errors)
+        urls = [j["result_url"] for j in results
+                if j.get("status") == "completed" and j.get("result_url")]
+        if not urls and not errors:
             raise BackendError(self._failure_text(results))
-        return images
+        progress_step(progress, 0.9, "Downloading results...")
+        images, _ = collect(urls, lambda url: check_image(download(url), "Higgsfield"),
+                            cancelled, errors)
+        return finish(images, errors, "Higgsfield")
 
     # -- steps ---------------------------------------------------------------
 
@@ -177,11 +176,15 @@ class HiggsfieldBackend(McpBackend):
             raise BackendError("Higgsfield did not accept the generation request.")
         return jobs
 
-    def _wait(self, client, jobs, progress, cancelled):
+    def _wait(self, client, jobs, progress, cancelled, errors):
+        """Job states once all are terminal; if waiting fails, the ones finished so far."""
+        last = []
+
         def step():
             out = client.call_tool("jobs_wait", {"jobs": jobs, "timeout_seconds": WAIT_SECONDS})
             if not isinstance(out, dict):
                 raise BackendError("Higgsfield returned an unexpected job status.")
+            last[:] = [j for j in out.get("jobs") or [] if isinstance(j, dict)]
             summary = out.get("summary") or {}
             done = int(summary.get("completed", 0)) + int(summary.get("failed", 0))
             progress_step(progress, 0.1 + 0.8 * done / float(len(jobs)),
@@ -190,8 +193,17 @@ class HiggsfieldBackend(McpBackend):
                 return out.get("jobs") or []
             self._pause(float(out.get("poll_after_seconds") or 0), cancelled)
             return None
-        return poll(step, cancelled, timeout=RESULT_TIMEOUT, interval=0,
-                    what="Higgsfield to finish")
+        try:
+            return poll(step, cancelled, timeout=RESULT_TIMEOUT, interval=0,
+                        what="Higgsfield to finish")
+        except Cancelled:
+            raise
+        except BackendError as exc:
+            done = [j for j in last if j.get("status") == "completed" and j.get("result_url")]
+            if not done:
+                raise
+            errors.append(str(exc))   # Higgsfield has no cancel: keep what is paid for
+            return done
 
     @staticmethod
     def _pause(seconds, cancelled):

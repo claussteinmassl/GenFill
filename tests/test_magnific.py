@@ -68,6 +68,7 @@ class MagnificTests(unittest.TestCase):
             mock.patch.object(magnific, "put_bytes",
                               lambda url, data, ctype, **k: self.puts.append((url, data, ctype))),
             mock.patch.object(magnific, "download", lambda url, **k: PNG + url.encode()),
+            mock.patch("genfill.log.warning"),
         ]
         for p in patches:
             p.start()
@@ -243,6 +244,95 @@ class MagnificTests(unittest.TestCase):
             self.run_with(tools, self.request(count=1))
         self.assertIn("failed", str(cm.exception))
         self.assertIn("content blocked", str(cm.exception))
+
+    def test_one_failed_job_keeps_the_others(self):
+        ids = iter(["R1", "R2", "R3"])
+        tools = upload_tools({
+            "images_retouch": lambda a: {"creation": {"identifier": next(ids)}},
+            "creations_wait": lambda a: {"results": [
+                {"identifier": "R1", "status": "completed", "results": {"url": "https://cdn/R1"}},
+                {"identifier": "R2", "status": "failed", "error": "filtered"},
+                {"identifier": "R3", "status": "completed", "results": {"url": "https://cdn/R3"}}],
+                "allTerminal": True},
+        })
+        _, out = self.run_with(tools, self.request(count=3))
+        self.assertEqual(out, [PNG + b"https://cdn/R1", PNG + b"https://cdn/R3"])
+
+    def test_one_failed_download_keeps_the_others(self):
+        ids = iter(["R1", "R2", "R3"])
+
+        def dl(url, **k):
+            if url.endswith("R1.png"):
+                raise base.BackendError("Could not download the result")
+            return PNG + url.encode()
+        tools = upload_tools({
+            "images_retouch": lambda a: {"creation": {"identifier": next(ids)}},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        with mock.patch.object(magnific, "download", dl):
+            _, out = self.run_with(tools, self.request(count=2))
+        self.assertEqual(out, [PNG + b"https://cdn/R2.png"])
+        with mock.patch.object(magnific, "download",
+                               mock.Mock(side_effect=base.BackendError("gone"))):
+            with self.assertRaises(base.BackendError) as cm:
+                self.run_with(tools, self.request(count=1))
+        self.assertIn("gone", str(cm.exception))
+
+    def test_failed_submit_keeps_queued_jobs(self):
+        answers = [{"creation": {"identifier": "R1"}}, "Error: insufficient credits"]
+        tools = upload_tools({
+            "images_retouch": lambda a: answers.pop(0),
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        client, out = self.run_with(tools, self.request(count=3))
+        self.assertEqual(len(client.named("images_retouch")), 2)   # stops after the failure
+        self.assertEqual(out, [PNG + b"https://cdn/R1.png"])
+
+    def test_wait_error_after_progress_keeps_finished(self):
+        rounds = [
+            {"results": [{"identifier": "R1", "status": "completed",
+                          "results": {"url": "https://cdn/R1.png"}},
+                         {"identifier": "R2", "status": "processing"}], "allTerminal": False},
+            "Error: server unavailable",
+        ]
+        ids = iter(["R1", "R2"])
+        tools = upload_tools({
+            "images_retouch": lambda a: {"creation": {"identifier": next(ids)}},
+            "creations_wait": rounds,
+        })
+        _, out = self.run_with(tools, self.request(count=2))
+        self.assertEqual(out, [PNG + b"https://cdn/R1.png"])
+
+    def test_negative_seed_is_wrapped_to_uint32(self):
+        tools = upload_tools({
+            "images_generate": lambda a: {"creations": [{"identifier": "G1"}]},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        client, _ = self.run_with(tools, self.request(model="flux-kontext", seed=-1, count=1))
+        self.assertEqual(client.named("images_generate")[0]["seed"], 4294967295)
+        client, _ = self.run_with(tools, self.request(model="flux-kontext", seed=2 ** 32 + 5,
+                                                      count=1))
+        self.assertEqual(client.named("images_generate")[0]["seed"], 5)
+
+    def test_rounds_without_progress_pause(self):
+        rounds = [
+            {"results": [{"identifier": "R1", "status": "processing", "poll_after_seconds": 3}],
+             "allTerminal": False},
+            {"results": [{"identifier": "R1", "status": "processing", "poll_after_seconds": 60}],
+             "allTerminal": False},
+            {"results": [{"identifier": "R1", "status": "processing"}], "allTerminal": False},
+            done(["R1"]),
+        ]
+        tools = upload_tools({
+            "images_retouch": lambda a: {"creation": {"identifier": "R1"}},
+            "creations_wait": rounds,
+        })
+        with mock.patch.object(magnific, "pause") as pause:
+            self.run_with(tools, self.request(count=1))
+        self.assertEqual([c[0][0] for c in pause.call_args_list], [3.0, 5.0, 1.0])
+        # the real pause stays cancellable
+        with self.assertRaises(base.Cancelled):
+            magnific.pause(5.0, lambda: True)
 
     def test_non_json_result_is_backend_error(self):
         tools = upload_tools({"images_retouch": lambda a: "Error: insufficient credits " * 50})

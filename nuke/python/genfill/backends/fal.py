@@ -8,6 +8,10 @@ Flow per Generate click: upload the crop and the mask once to the fal CDN (v3 CD
 storage initiate/PUT flow, then data URIs as a last resort), submit one queue request per
 batch of variations, poll every ``status_url``, fetch every ``response_url`` and download the
 result images. An empty prompt switches an inpaint model to its removal endpoint.
+
+Paid results follow the shared policy in ``cloud``: a failed request or download only drops
+that variation; when GenFill gives up (error, timeout, cancel) it PUTs ``cancel_url`` for every
+request still running; transient poll errors (5xx, 429, network) are retried a few times.
 """
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ import time
 from . import base
 from .base import (REF_EMPTY_PROMPT, REF_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
                    ModelSpec)
+from .cloud import collect, finish
 from .. import pngio, region
 
 QUEUE_ROOT = "https://queue.fal.run"
@@ -29,7 +34,7 @@ POLL_INTERVAL = 1.0
 TIMEOUT = 900.0          # give up on a request after 15 minutes
 MASK_THRESHOLD = 32      # binarize the soft mask a little generously (slightly dilated)
 MAX_SEED = 2147483646
-STATUS_RETRIES = 3       # tolerated consecutive 5xx answers while polling
+STATUS_RETRIES = 3       # tolerated consecutive transient errors (5xx, 429, network) per job
 
 # Mask models that require a prompt get this when the artist leaves it empty and the model has
 # no removal endpoint of its own.
@@ -122,7 +127,7 @@ class FalBackend(Backend):
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         if not api_key:
-            raise BackendError("No fal.ai API key set (FAL_KEY or API Keys...).")
+            raise BackendError("No fal.ai API key set (FAL_KEY or API Keys & Accounts...).")
         spec = self.model_spec(request.model)
         prompt = request.prompt.strip()
         if not prompt and spec.erase:
@@ -139,7 +144,7 @@ class FalBackend(Backend):
         urls = self._upload_inputs(request, spec, headers, check)
 
         plan = _plan(spec, request)
-        jobs = []
+        jobs, errors = [], []
         try:
             for i, (n, seed) in enumerate(plan):
                 check()
@@ -147,14 +152,23 @@ class FalBackend(Backend):
                     progress(0.1 + 0.1 * i / len(plan), "Submitting request %d of %d to %s..."
                              % (i + 1, len(plan), spec.id))
                 body = build_payload(spec, request, prompt, urls, n, seed)
-                jobs.append(self._submit(spec.id, body, headers))
-            results = self._wait_all(jobs, headers, progress, check)
-        except Cancelled:
+                try:
+                    jobs.append(self._submit(spec.id, body, headers))
+                except Cancelled:
+                    raise
+                except BackendError as exc:
+                    if not jobs:
+                        raise
+                    errors.append(str(exc))   # keep the requests already queued
+                    break
+            results = self._wait_all(jobs, headers, progress, check, errors)
+        except Exception:   # Cancelled or anything unexpected: stop paying for what still runs
             self._cancel(jobs, headers)
             raise
-        if not results:
-            raise BackendError("fal.ai returned no images.")
-        return results[:request.count]
+        if not results and not errors:
+            raise BackendError("fal.ai's content filter blocked every result. "
+                               "Try a different prompt.")
+        return finish(results, errors, "fal.ai")[:request.count]
 
     # ----------------------------------------------------------------- inputs
 
@@ -187,13 +201,18 @@ class FalBackend(Backend):
                 "cancel_url": info.get("cancel_url") or urls[2], "done": False, "fails": 0,
                 "images": []}
 
-    def _wait_all(self, jobs, headers, progress, check):
+    def _wait_all(self, jobs, headers, progress, check, errors):
+        """Poll every job until all are done; returns the images of the successful ones.
+
+        A failed job adds its message to ``errors``; on the overall timeout the jobs still
+        running are cancelled and the finished images are returned.
+        """
         start = time.monotonic()
         while not all(j["done"] for j in jobs):
             check()
             for job in jobs:
                 if not job["done"]:
-                    self._poll(job, headers)
+                    self._poll(job, headers, errors)
             finished = sum(1 for j in jobs if j["done"])
             if progress:
                 progress(0.2 + 0.7 * finished / len(jobs), "Waiting for fal.ai (%d of %d done)..."
@@ -202,36 +221,44 @@ class FalBackend(Backend):
                 break
             if time.monotonic() - start > TIMEOUT:
                 self._cancel(jobs, headers)
-                raise BackendError("fal.ai took too long (over %d minutes). Try again or pick "
-                                   "a faster model." % int(TIMEOUT // 60))
+                errors.append("fal.ai took too long (over %d minutes). Try again or pick "
+                              "a faster model." % int(TIMEOUT // 60))
+                break
             time.sleep(POLL_INTERVAL)
         results = []
         for job in jobs:
             results.extend(job["images"])
-        if not results:
-            raise BackendError("fal.ai's content filter blocked every result. "
-                               "Try a different prompt.")
         return results
 
-    def _poll(self, job, headers):
-        url = job["status_url"]
-        url += ("&" if "?" in url else "?") + "logs=0"
-        status, _, data = base.http_request("GET", url, None, headers, 60)
-        if status >= 500:
+    def _poll(self, job, headers, errors):
+        """One status check; a job that fails for good is marked done with its error."""
+        try:
+            self._poll_once(job, headers, errors)
+            job["fails"] = 0
+        except Cancelled:
+            raise
+        except _Transient as exc:
             job["fails"] += 1
             if job["fails"] > STATUS_RETRIES:
-                _raise_fal(status, data)
-            return
-        job["fails"] = 0
+                job["done"] = True
+                errors.append(str(exc))
+        except BackendError as exc:
+            job["done"] = True
+            errors.append(str(exc))
+
+    def _poll_once(self, job, headers, errors):
+        url = job["status_url"]
+        url += ("&" if "?" in url else "?") + "logs=0"
+        status, _, data = _get(url, headers, 60)
         _raise_fal(status, data)
         info = _json(data)
         if info.get("status") != "COMPLETED":
             return
         if info.get("error"):
             raise BackendError(_failed_text(info.get("error"), info.get("error_type")))
-        status, _, data = base.http_request("GET", job["response_url"], None, headers, 120)
+        status, _, data = _get(job["response_url"], headers, 120)
         _raise_fal(status, data)
-        job["images"] = _fetch_images(_json(data))
+        job["images"] = _fetch_images(_json(data), errors)
         job["done"] = True
 
     def _cancel(self, jobs, headers):
@@ -380,27 +407,51 @@ def _queue_urls(endpoint, request_id):
     return root + "/status", root, root + "/cancel"
 
 
-def _fetch_images(result):
+def _fetch_images(result, errors):
+    """Download every unflagged image of one result; failures go to ``errors``."""
     items = result.get("images")
     if not isinstance(items, list) or not items:
         items = [result["image"]] if isinstance(result.get("image"), dict) else []
     flags = result.get("has_nsfw_concepts")
-    out = []
+    urls = []
     for i, item in enumerate(items):
         if isinstance(flags, list) and i < len(flags) and flags[i]:
             continue  # blacked out by the safety checker
         url = item.get("url") if isinstance(item, dict) else item
-        if not url:
-            continue
-        if url.startswith("data:"):
-            try:
-                data = base64.b64decode(url.split(",", 1)[1])
-            except (IndexError, ValueError):
-                raise BackendError("fal.ai returned an unreadable image.")
-        else:
-            data = base.download(url)
-        out.append(base.check_image(data, "fal.ai"))
-    return out
+        if url:
+            urls.append(url)
+    return collect(urls, _fetch_one, errors=errors)[0]
+
+
+def _fetch_one(url):
+    if url.startswith("data:"):
+        try:
+            data = base64.b64decode(url.split(",", 1)[1])
+        except (IndexError, ValueError):
+            raise BackendError("fal.ai returned an unreadable image.")
+    else:
+        data = base.download(url)
+    return base.check_image(data, "fal.ai")
+
+
+class _Transient(BackendError):
+    """A poll error worth retrying (5xx, 429, network)."""
+
+
+def _get(url, headers, timeout):
+    """GET for polling: network errors and 5xx/429 answers raise :class:`_Transient`."""
+    try:
+        status, hdrs, data = base.http_request("GET", url, None, headers, timeout)
+    except Cancelled:
+        raise
+    except BackendError as exc:
+        raise _Transient(str(exc))
+    if status >= 500 or status == 429:
+        try:
+            _raise_fal(status, data)
+        except BackendError as exc:
+            raise _Transient(str(exc))
+    return status, hdrs, data
 
 
 def _json_or_none(data):

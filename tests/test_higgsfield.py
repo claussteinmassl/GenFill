@@ -61,6 +61,7 @@ class HiggsfieldTests(unittest.TestCase):
         self.put = mock.patch.object(higgsfield, "put_bytes").start()
         self.dl = mock.patch.object(higgsfield, "download", return_value=PNG).start()
         mock.patch("time.sleep").start()
+        mock.patch("genfill.log.warning").start()
         self.addCleanup(mock.patch.stopall)
 
     def request(self, **kw):
@@ -131,6 +132,31 @@ class HiggsfieldTests(unittest.TestCase):
         with self.assertRaises(BackendError) as cm:
             self.run_generate(FakeClient([done("nsfw", "nsfw")]))
         self.assertIn("content filter", str(cm.exception))
+
+    def test_one_failed_download_keeps_the_others(self):
+        def dl(url, **k):
+            if url.endswith("r0.png"):
+                raise BackendError("Could not download the result")
+            return PNG
+        self.dl.side_effect = dl
+        out = self.run_generate(FakeClient([done("completed", "completed")]))
+        self.assertEqual(out, [PNG])
+        self.dl.side_effect = BackendError("gone")
+        with self.assertRaises(BackendError) as cm:
+            self.run_generate(FakeClient([done("completed", "completed")]))
+        self.assertIn("gone", str(cm.exception))
+
+    def test_wait_timeout_keeps_finished_jobs(self):
+        part = done("completed", "pending")
+        part.update(all_terminal=False)
+        client = FakeClient([part] * 50)
+        with mock.patch.object(higgsfield, "RESULT_TIMEOUT", -1):
+            out = self.run_generate(client)
+        self.assertEqual(out, [PNG])
+        with mock.patch.object(higgsfield, "RESULT_TIMEOUT", -1):
+            with self.assertRaises(BackendError) as cm:
+                self.run_generate(FakeClient([{"jobs": [], "all_terminal": False}] * 5))
+        self.assertIn("Timed out", str(cm.exception))
 
     def test_submit_rejected(self):
         with self.assertRaises(BackendError):
