@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
 from genfill import pngio  # noqa: E402

@@ -20,7 +20,9 @@ import os
 import tempfile
 import threading
 
-CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".nuke", "genfill")
+# GENFILL_CONFIG_DIR moves config.json and the model cache (tests use a temp dir).
+CONFIG_DIR = (os.environ.get("GENFILL_CONFIG_DIR", "").strip()
+              or os.path.join(os.path.expanduser("~"), ".nuke", "genfill"))
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 _lock = threading.RLock()

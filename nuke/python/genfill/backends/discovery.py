@@ -41,7 +41,10 @@ _revision = [0]        # bumped whenever a cache entry or a worker state changes
 
 
 def cache_path():
-    """Location of the cache file (next to config.json)."""
+    """Location of the cache file: ``GENFILL_MODELS_CACHE``, else next to config.json."""
+    override = os.environ.get("GENFILL_MODELS_CACHE", "").strip()
+    if override:
+        return override
     from .. import config
     return os.path.join(config.CONFIG_DIR, CACHE_NAME)
 

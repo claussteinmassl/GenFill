@@ -6,6 +6,8 @@ import tempfile
 import types
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.dirname(__file__))
 import fake_nuke  # noqa: E402
 

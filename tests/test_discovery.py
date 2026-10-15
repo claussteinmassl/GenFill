@@ -16,6 +16,8 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(HERE, "..", "nuke", "python"))
 sys.path.insert(0, HERE)
 
@@ -234,6 +236,23 @@ class ParserTests(unittest.TestCase):
 # --------------------------------------------------------------------------
 # cache, merge and refresh
 # --------------------------------------------------------------------------
+
+class IsolationTests(unittest.TestCase):
+    def test_tests_never_touch_the_users_files(self):
+        from genfill import config
+        real = os.path.join(os.path.expanduser("~"), ".nuke", "genfill")
+        self.assertNotEqual(os.path.abspath(config.CONFIG_DIR), os.path.abspath(real))
+        self.assertFalse(os.path.abspath(discovery.cache_path()).startswith(
+            os.path.abspath(real)))
+
+    def test_cache_path_override(self):
+        with mock.patch.dict(os.environ, {"GENFILL_MODELS_CACHE": "/x/cache.json"}):
+            self.assertEqual(discovery.cache_path(), "/x/cache.json")
+        with mock.patch.dict(os.environ, {"GENFILL_MODELS_CACHE": ""}):
+            from genfill import config
+            self.assertEqual(discovery.cache_path(),
+                             os.path.join(config.CONFIG_DIR, discovery.CACHE_NAME))
+
 
 class CacheTests(CacheMixin, unittest.TestCase):
     def setUp(self):
