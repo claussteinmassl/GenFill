@@ -13,9 +13,11 @@ every finished image is returned even when sibling jobs failed (see ``cloud``).
 """
 from __future__ import annotations
 
+from . import discovery
 from .base import BackendError, Cancelled, ModelSpec, check_image, download
 from .cloud import (McpBackend, collect, finish, pause, poll, progress_step, put_bytes,
                     ref_prompt)
+from .oauth import LoginRequired
 from .. import region
 
 SERVER_URL = "https://mcp.magnific.com"
@@ -121,14 +123,20 @@ class MagnificBackend(McpBackend):
     default_model = "retouch-auto"
     catalogue = CATALOGUE
     description = "Pixel-preserving Retouch plus reference-edit models, billed to Magnific credits."
+    discoverable = True
 
-    def model_spec(self, model=""):
-        model = (model or self.default_model).strip()
-        for m in self.catalogue:
-            if m.id == model:
-                return m
+    def adhoc_spec(self, model):
         kind = "inpaint" if model.startswith("retouch-") else "edit"
         return ModelSpec(model, model, kind=kind, max_count=8)
+
+    def discover(self, api_key=""):
+        """Live catalogue: ``retouch_models_list`` (text) plus ``images_models_list`` (JSON)."""
+        if not self.provider().signed_in():
+            raise LoginRequired("Not signed in to Magnific (API Keys & Accounts...).")
+        client = self.client(api_key, interactive=False)
+        retouch = client.call_tool("retouch_models_list", {})
+        edits = client.call_tool("images_models_list", {})
+        return retouch_specs(retouch) + edit_specs(edits)
 
     def model_size(self, width, height, model=""):
         spec = self.model_spec(model)
@@ -293,6 +301,75 @@ class MagnificBackend(McpBackend):
 
 
 CATALOGUE_BY_ID = dict((m.id, m) for m in CATALOGUE)
+
+# Retouch models that need inputs GenFill doesn't have (a character image, a LoRA).
+_RETOUCH_SKIP = ("retouch-reference", "retouch-lora")
+
+
+def _name(entry):
+    name = str(entry.get("name") or entry.get("slug") or "").strip()
+    return name[len("Google "):] if name.startswith("Google ") else name
+
+
+def retouch_specs(result):
+    """Inpaint specs from a ``retouch_models_list`` answer (indented text or JSON)."""
+    data = result if isinstance(result, dict) else discovery.parse_toon(result)
+    specs = []
+    for m in data.get("models") or []:
+        if not isinstance(m, dict):
+            continue
+        slug = str(m.get("slug") or "")
+        modes = [str(x) for x in m.get("retouchModes") or []]
+        if (not slug.startswith("retouch-") or slug in _RETOUCH_SKIP
+                or m.get("tool", "retouch") != "retouch"
+                or not ("replace" in modes or "erase" in modes)):
+            continue
+        label = "Retouch " + _name(m)
+        if "-precise-" in slug:
+            label += " Precise"
+        extra = {}
+        if "replace" not in modes:
+            extra["erase_only"] = True
+            label += " (erase only)"
+        elif m.get("beta"):
+            label += " (beta)"
+        resolution = discovery.smallest_resolution(m.get("resolutions"))
+        if resolution:
+            extra["resolution"] = resolution
+        specs.append(_retouch(slug, label, erase=None if "erase" in modes else "retouch-auto",
+                              note=BETA_NOTE if m.get("private") else "", **extra))
+    return specs
+
+
+def edit_specs(result):
+    """Reference-edit specs from an ``images_models_list`` answer.
+
+    Only models that take an ``image`` reference qualify; models that need extra settings
+    (``extraSettings``) and the ``auto`` router are left out.
+    """
+    specs = []
+    for m in (result.get("models") if isinstance(result, dict) else None) or []:
+        if not isinstance(m, dict):
+            continue
+        slug = str(m.get("slug") or "")
+        if (not slug or slug == "auto" or m.get("extraSettings") or not m.get("supportsReferences")
+                or "image" not in (m.get("referenceTypes") or [])):
+            continue
+        extra = {}
+        if m.get("customSize"):
+            extra["custom_size"] = True
+        ratios = discovery.ratio_list(m.get("aspectRatios"))
+        if ratios:
+            extra["ratios"] = ratios
+        resolution = discovery.smallest_resolution(m.get("resolutions"))
+        if resolution:
+            extra["resolution"] = resolution
+        quality = discovery.quality_map(m.get("qualities"))
+        if quality:
+            extra["quality"] = quality
+        label = _name(m) + (" (beta)" if m.get("beta") else "")
+        specs.append(_edit(slug, label, note=BETA_NOTE if m.get("private") else "", **extra))
+    return specs
 
 
 def _closest_ratio(spec, width, height):

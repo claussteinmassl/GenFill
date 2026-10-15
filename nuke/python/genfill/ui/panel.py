@@ -39,11 +39,26 @@ THUMB_W = 132
 THUMB_H = 92
 COLUMNS = 3
 POLL_MS = 300
+REFRESH_ITEM = "__genfill_refresh_models__"   # item data of the "Refresh model list" entry
 
 
 # --------------------------------------------------------------------------
 # controller
 # --------------------------------------------------------------------------
+
+def _refresh_tip(state):
+    """Tooltip of the "Refresh model list" entry: last result and cache age."""
+    lines = ["Fetch the provider's current model list (models added after this GenFill "
+             "release appear as \"(new)\"). Checked automatically once a day."]
+    if state.get("message"):
+        lines.append(("Last refresh: " if state.get("ok") else "Last refresh failed: ")
+                     + state["message"])
+    if state.get("fetched"):
+        import time
+        lines.append("List fetched %s." % time.strftime("%Y-%m-%d %H:%M",
+                                                        time.localtime(state["fetched"])))
+    return "\n".join(lines)
+
 
 class NukeController(object):
     """Adapter between the panel and a GenerativeFill node."""
@@ -98,9 +113,37 @@ class NukeController(object):
             self.node["gf_model"].setValue(text)
 
     def model_catalogue(self):
-        """(default_model, [(id, label, note), ...]) of the current backend."""
+        """(default_model, [(id, label, note), ...]) of the current backend.
+
+        Curated entries first, then live-discovered ones, labelled " (new)".
+        """
         b = self._gfnode.backend_for(self.node)
-        return b.default_model, [(m.id, m.label, m.note) for m in b.catalogue]
+        return b.default_model, [
+            (m.id, m.label + (" (new)" if getattr(m, "discovered", False) else ""), m.note)
+            for m in b.all_models()]
+
+    def can_discover(self):
+        """True if the current backend can list its models live."""
+        return bool(self._gfnode.backend_for(self.node).discoverable)
+
+    def discover_models(self, force=False):
+        """Start model discovery on a worker thread (automatic: at most once a day)."""
+        from .. import config
+        from ..backends import discovery
+        b = self._gfnode.backend_for(self.node)
+        key = config.get_api_key(b.id, b.env_var)
+        if force:
+            return discovery.start(b, key, force=True)
+        return discovery.maybe_start(b, key)
+
+    def discovery_state(self):
+        """``discovery.state`` of the current backend (busy, ok, message, new, fetched)."""
+        from ..backends import discovery
+        return discovery.state(self._gfnode.backend_for(self.node).id)
+
+    def discovery_revision(self):
+        from ..backends import discovery
+        return discovery.revision()
 
     def status(self):
         return self._engine.status(self.node)
@@ -358,6 +401,9 @@ class GenFillPanel(QtWidgets.QWidget):
         self.version.activated.connect(self._on_version)
         self.version.lineEdit().editingFinished.connect(self._on_version_typed)
         self._version_backend = None
+        self._version_label = None
+        self._discovery_note = ""
+        self._refresh_wanted = False
         head.addWidget(self.version)
         root.addLayout(head)
 
@@ -482,6 +528,9 @@ class GenFillPanel(QtWidgets.QWidget):
     def _on_version(self, index):
         """A catalogue entry was picked: store its id ("" = backend default)."""
         data = self.version.itemData(index)
+        if data == REFRESH_ITEM:
+            self._refresh_models()
+            return
         self.ctl.set_model_version(data if data is not None else self.version.itemText(index))
 
     @_safe
@@ -490,15 +539,51 @@ class GenFillPanel(QtWidgets.QWidget):
         text = self.version.currentText().strip()
         idx = self.version.findText(text)
         if idx >= 0:
+            if self.version.itemData(idx) == REFRESH_ITEM:
+                self._show_version()
+                return
             text = self.version.itemData(idx) or ""
         self.ctl.set_model_version(text)
+
+    def _refresh_models(self):
+        """The "Refresh model list" entry: fetch the provider's list on a worker thread."""
+        self._refresh_wanted = True
+        self._discovery_note = ""
+        self.ctl.discover_models(force=True)
+        self._version_backend = None   # rebuild: the entry now reads "Refreshing..."
+        self._sync(force=True)
+        self._show_version(force=True)
+
+    def _discovery(self):
+        """``(can_discover, state)`` from controllers that support discovery."""
+        if not getattr(self.ctl, "can_discover", None) or not self.ctl.can_discover():
+            return False, {}
+        return True, self.ctl.discovery_state() or {}
+
+    def _check_refresh_done(self, state):
+        """After a forced refresh finishes, say what it found (or why it failed)."""
+        if not self._refresh_wanted or state.get("busy"):
+            return
+        self._refresh_wanted = False
+        if state.get("ok"):
+            new = int(state.get("new") or 0)
+            self._discovery_note = (
+                "Model list refreshed: %d new model%s." % (new, "s" * (new != 1)) if new
+                else "Model list refreshed: nothing new.")
+        else:
+            self._discovery_note = ("Could not refresh the model list: %s"
+                                    % (state.get("message") or "unknown error"))
 
     def _fill_version(self):
         """Rebuild the version items for the current backend and show gf_model."""
         default, entries = self.ctl.model_catalogue()
-        key = (self.ctl.backend_label(), default, tuple(e[0] for e in entries))
+        can, state = self._discovery()
+        busy = bool(state.get("busy"))
+        key = (self.ctl.backend_label(), default, tuple(e[:2] for e in entries), can, busy)
         if key != self._version_backend:
+            backend_changed = key[0] != self._version_label
             self._version_backend = key
+            self._version_label = key[0]
             self.version.blockSignals(True)
             self.version.clear()
             self.version.addItem("Default (%s)" % default if default else "Default", "")
@@ -506,8 +591,25 @@ class GenFillPanel(QtWidgets.QWidget):
                 self.version.addItem(label, mid)
                 if note:
                     self.version.setItemData(self.version.count() - 1, note, Qt.ToolTipRole)
+            if can:
+                self.version.insertSeparator(self.version.count())
+                self.version.addItem(u"Refreshing model list\u2026" if busy
+                                     else u"Refresh model list\u2026", REFRESH_ITEM)
+                self.version.setItemData(self.version.count() - 1, _refresh_tip(state),
+                                         Qt.ToolTipRole)
             self.version.blockSignals(False)
-        if self.version.lineEdit().hasFocus():
+            if backend_changed:
+                self._discovery_note = ""
+                self._refresh_wanted = False
+                if can:
+                    self.ctl.discover_models(force=False)   # lazily, at most once a day
+        if can:
+            self._check_refresh_done(state)
+        self._show_version()
+
+    def _show_version(self, force=False):
+        """Show the gf_model value in the combo (not while the artist types)."""
+        if self.version.lineEdit().hasFocus() and not force:
             return
         current = self.ctl.model_version()
         idx = self.version.findData(current)
@@ -526,6 +628,7 @@ class GenFillPanel(QtWidgets.QWidget):
             self.ctl.cancel()
             return
         self.ctl.set_prompt(self.prompt.text())
+        self._discovery_note = ""
         # Immediate feedback: preparing the crop renders on the main thread.
         self._local_error = ""
         self.status.setObjectName("gfMuted")
@@ -597,7 +700,8 @@ class GenFillPanel(QtWidgets.QWidget):
         if not self.ctl.alive():
             self._timer.stop() if hasattr(self, "_timer") else None
             return
-        sig = self.ctl.signature()
+        revision = getattr(self.ctl, "discovery_revision", None)
+        sig = (self.ctl.signature(), revision() if revision else None)
         if sig == self._sig and not force:
             return
         self._sig = sig
@@ -629,7 +733,8 @@ class GenFillPanel(QtWidgets.QWidget):
             self.status.setText(st.get("error") or self._local_error)
         else:
             self.status.setObjectName("gfMuted")
-            self.status.setText(st.get("message", "") if (running or st.get("message")) else "")
+            message = st.get("message", "") if (running or st.get("message")) else ""
+            self.status.setText(message or self._discovery_note)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self.status.setVisible(bool(self.status.text()))

@@ -1,0 +1,134 @@
+{
+ "models": [
+  {
+   "endpoint_id": "fal-ai/bria/eraser",
+   "metadata": {
+    "display_name": "Bria Eraser",
+    "category": "image-to-image",
+    "description": "Removes masked objects. For two erase modes: https://fal.ai/models/bria/fibo-edit-1.5/eraser",
+    "status": "active",
+    "tags": [
+     "image editing",
+     "object removal"
+    ],
+    "updated_at": "2026-10-14T18:07:54.663Z",
+    "group": {
+     "key": "bria",
+     "label": "Eraser"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/object-removal/mask",
+   "metadata": {
+    "display_name": "Object Removal",
+    "category": "image-to-image",
+    "description": "Removes mask-selected objects and their visual effects, seamlessly reconstructing the scene with contextually appropriate content.",
+    "status": "active",
+    "tags": [
+     "utility",
+     "editing"
+    ],
+    "updated_at": "2026-01-26T21:43:27.015Z",
+    "group": {
+     "key": "object-removal",
+     "label": "Mask"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/z-image/turbo/inpaint",
+   "metadata": {
+    "display_name": "Z Image Turbo Inpaint",
+    "category": "image-to-image",
+    "description": "Generate images from text, an image and a mask using Z-Image Turbo, Tongyi-MAI's super-fast 6B model.",
+    "status": "active",
+    "tags": [
+     "inpainting"
+    ],
+    "updated_at": "2026-04-21T17:56:52.732Z",
+    "group": {
+     "key": "z-image-turbo",
+     "label": "Inpainting"
+    }
+   }
+  },
+  {
+   "endpoint_id": "alibaba/qwen-image-3/edit",
+   "metadata": {
+    "display_name": "Qwen Image 3 Image Editing",
+    "category": "image-to-image",
+    "description": "Edits images from one to three reference images and a natural-language instruction, preserving key details such as facial features and identity while applying the requested changes",
+    "status": "active",
+    "tags": [
+     "stylized",
+     "transform",
+     "typography"
+    ],
+    "updated_at": "2026-08-28T21:08:33.124Z",
+    "group": {
+     "key": "qwen-image-3",
+     "label": "Image Editing"
+    }
+   }
+  },
+  {
+   "endpoint_id": "fal-ai/flux-general/inpainting",
+   "metadata": {
+    "display_name": "FLUX.1 [dev] with Controlnets and Loras",
+    "category": "image-to-image",
+    "description": "FLUX General Inpainting is a versatile endpoint that enables precise image editing and completion, supporting multiple AI extensions including LoRA, ControlNet, and IP-Adapter for enhanced control over inpainting results and sophisticated image modifications.",
+    "status": "active",
+    "tags": [
+     "lora",
+     "controlnet",
+     "ip-adapter"
+    ],
+    "updated_at": "2026-04-21T17:46:57.118Z",
+    "group": {
+     "key": "flux-general",
+     "label": "Inpainting"
+    }
+   }
+  },
+  {
+   "endpoint_id": "luma/agent/uni-1/v1/edit",
+   "metadata": {
+    "display_name": "Luma Uni-1 Edit",
+    "category": "image-to-image",
+    "description": "Luma Uni-1 Edit reworks a source image from a text instruction, preserving the original composition while applying style changes and following optional reference images to steer the result.",
+    "status": "active",
+    "tags": [
+     "stylized",
+     "transform"
+    ],
+    "updated_at": "2026-06-15T21:36:15.554Z",
+    "group": {
+     "key": "uni-1",
+     "label": "Edit"
+    }
+   }
+  },
+  {
+   "endpoint_id": "microsoft/mai-image-2.5/edit",
+   "metadata": {
+    "display_name": "Mai Image 2.5",
+    "category": "image-to-image",
+    "description": "MAI-Image-2.5 is Microsoft's photorealistic image generation and editing model that turns text prompts or uploaded images into high-quality, design-ready visuals with fine-grained, pixel-level control.",
+    "status": "active",
+    "tags": [
+     "realism",
+     "typography",
+     "stylized"
+    ],
+    "updated_at": "2026-07-01T04:49:53.442Z",
+    "group": {
+     "key": "mai-image-25",
+     "label": "Image Editing"
+    }
+   }
+  }
+ ],
+ "next_cursor": null,
+ "has_more": false
+}

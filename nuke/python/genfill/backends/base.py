@@ -78,6 +78,7 @@ class ModelSpec(object):
         self.max_count = max_count  # images per request
         self.note = note
         self.extra = extra
+        self.discovered = False     # True: found by live discovery, not in the curated list
 
     def __repr__(self):
         return "ModelSpec(%r)" % self.id
@@ -95,18 +96,43 @@ class Backend(object):
     result_ext = ".png"     # default; the engine names PNG/JPEG results by their content
     auth = "key"            # "key", "oauth" (browser sign-in) or "key_or_oauth"
     catalogue = ()          # ModelSpec entries, shown in the model version menu
+    discoverable = False    # True: discover() lists the provider's models live
+
+    def discover(self, api_key=""):
+        """Fetch the provider's current model list (see :mod:`discovery`).
+
+        Runs on a worker thread, never on the Generate path, and must never open a browser.
+        Entries use the same ``ModelSpec.extra`` keys as the curated catalogue so ``generate``
+        handles them. Raises :class:`BackendError` (or anything else) when the list can't be
+        fetched; the caller then keeps the cached list.
+        """
+        return []
+
+    def all_models(self):
+        """The curated catalogue followed by cached discovered models it doesn't list."""
+        if not self.discoverable:
+            return list(self.catalogue)
+        from . import discovery
+        return discovery.merge(self.catalogue, discovery.cached(self.id))
 
     def model_ids(self):
         """Model ids for the model version menu."""
-        return [m.id for m in self.catalogue] or list(self.models)
+        return [m.id for m in self.all_models()] or list(self.models)
 
     def model_spec(self, model=""):
-        """The catalogue entry for ``model`` (default model if empty, ad-hoc spec if unknown)."""
+        """The catalogue entry for ``model`` (default model if empty, ad-hoc spec if unknown).
+
+        Curated entries win over discovered ones with the same id.
+        """
         model = (model or self.default_model).strip()
-        for m in self.catalogue:
+        for m in self.all_models():
             if m.id == model:
                 return m
-        return ModelSpec(model, model, kind="edit") if model else None
+        return self.adhoc_spec(model) if model else None
+
+    def adhoc_spec(self, model):
+        """Spec for an id that is neither curated nor discovered (typed by the artist)."""
+        return ModelSpec(model, model, kind="edit")
 
     def model_size(self, width, height, model=""):
         """Resolution to send for a crop of ``width`` x ``height``."""

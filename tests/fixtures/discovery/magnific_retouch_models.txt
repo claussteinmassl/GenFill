@@ -1,0 +1,61 @@
+models[6]:
+  - slug: retouch-auto
+    name: Auto
+    family: retouch
+    tool: retouch
+    beta: false
+    expectedGenerationTime: 10
+    retouchModes[2]: replace,erase
+    retouchTypes[2]: precise,creative
+    requiresPremium: true
+  - slug: retouch-erase
+    name: Erase
+    family: retouch
+    tool: retouch
+    beta: false
+    expectedGenerationTime: 31
+    retouchModes[1]: erase
+    retouchTypes[1]: precise
+    requiresPremium: true
+  - slug: retouch-imagen-nano-banana-2
+    name: Google Nano Banana Pro
+    family: retouch
+    tool: retouch
+    beta: false
+    expectedGenerationTime: 50
+    retouchModes[1]: replace
+    retouchTypes[1]: creative
+    resolutions[2]: 2k,4k
+    defaultResolution: 2k
+    requiresPremium: true
+  - slug: retouch-precise-nano-banana-pro
+    name: Google Nano Banana Pro
+    family: retouch
+    tool: retouch
+    beta: true
+    expectedGenerationTime: 111
+    retouchModes[2]: replace,erase
+    retouchTypes[1]: precise
+    requiresPremium: true
+    private: true
+  - slug: retouch-inpaint-lab-seedream-5-pro
+    name: Seedream 5 Pro
+    family: retouch
+    tool: retouch
+    beta: true
+    expectedGenerationTime: 46
+    retouchModes[2]: replace,erase
+    retouchTypes[1]: creative
+    resolutions[2]: 1.5k,2k
+    defaultResolution: 2k
+    requiresPremium: true
+  - slug: retouch-lora
+    name: Lora
+    family: retouch
+    tool: retouch
+    beta: false
+    expectedGenerationTime: 23
+    retouchModes[1]: replace
+    retouchTypes[1]: precise
+    requiresPremium: true
+instruction: "Only offer a model whose `retouchModes` includes the mode you will run. Omit `model` in images_retouch to let Auto pick. `private: true` = internal or feature-flagged, not generally available. Use optional `search` to narrow by name or slug before reading the full catalog."

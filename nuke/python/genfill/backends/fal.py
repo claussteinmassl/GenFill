@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import random
+import re
 import time
 
 from . import base
@@ -141,6 +142,45 @@ class FalBackend(Backend):
     catalogue = CATALOGUE
     description = ("Many image models behind one key: mask inpainting, removal and "
                    "reference edits.")
+    discoverable = True
+
+    def discover(self, api_key=""):
+        """Live catalogue from fal's public model API (no key needed; sent if set).
+
+        Lists the image-to-image category (most used first), keeps edit/inpaint endpoints that
+        GenFill doesn't curate, then reads their OpenAPI input schemas in batches of ten.
+        """
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["Authorization"] = "Key %s" % api_key
+        listed, cursor = [], None
+        for page in range(MODELS_PAGES):
+            url = "%s?category=image-to-image&limit=100" % MODELS_API
+            if cursor:
+                url += "&cursor=%s" % _quote(cursor)
+            info = _models_get(url, headers)
+            listed += [m for m in info.get("models") or [] if isinstance(m, dict)]
+            cursor = info.get("next_cursor")
+            if not info.get("has_more") or not cursor:
+                break
+            time.sleep(MODELS_PAUSE)
+        curated = set(m.id for m in self.catalogue)
+        ids = [m["endpoint_id"] for m in listed
+               if _candidate(m) and m["endpoint_id"] not in curated]
+        ids = ids[:MODELS_CANDIDATES]
+        expanded = []
+        for i in range(0, len(ids), 10):
+            time.sleep(MODELS_PAUSE)
+            query = "&".join("endpoint_id=%s" % _quote(e) for e in ids[i:i + 10])
+            try:
+                info = _models_get("%s?expand=openapi-3.0&%s" % (MODELS_API, query), headers)
+            except BackendError as exc:
+                if not expanded:
+                    raise
+                _log_warning("fal.ai model discovery stopped early: %s", exc)
+                break
+            expanded += [m for m in info.get("models") or [] if isinstance(m, dict)]
+        return [s for s in (spec_from_openapi(m) for m in expanded) if s is not None]
 
     # ------------------------------------------------------------------ sizes
 
@@ -296,6 +336,146 @@ class FalBackend(Backend):
                 base.http_request("PUT", job["cancel_url"], None, headers, 15)
             except BackendError:
                 pass
+
+
+# --------------------------------------------------------------------------
+# Discovery (public model API)
+# --------------------------------------------------------------------------
+
+MODELS_API = "https://api.fal.ai/v1/models"
+MODELS_PAGES = 2          # most used first; two pages of 100 cover the relevant edit models
+MODELS_CANDIDATES = 30    # OpenAPI lookups (10 per call; the keyless API rate-limits)
+MODELS_PAUSE = 1.0
+_CANDIDATE = re.compile(r"edit|inpaint|fill|eras|remov")
+_NOT_A_FILL = re.compile(r"lora|gallery|background|image-editing/|image-apps|try-on|angles|"
+                         r"upscal|relight|restor|restyle|coloriz|reseason|sketch|blend|expand|"
+                         r"reframe|rewrite|text-removal|bbox|by_text|product")
+# Input fields GenFill fills; an endpoint that requires anything else is skipped.
+_FILLED = ("prompt", "image_url", "image_urls", "mask_url", "mask_image_url")
+
+
+def _candidate(model):
+    eid = str(model.get("endpoint_id") or "")
+    status = str((model.get("metadata") or {}).get("status") or "active")
+    return bool(eid) and status == "active" and bool(_CANDIDATE.search(eid)) \
+        and not _NOT_A_FILL.search(eid)
+
+
+def _input_schema(openapi):
+    """Properties and required list of an endpoint's POST body (``({}, [])`` if unknown)."""
+    if not isinstance(openapi, dict):
+        return {}, []
+    schemas = (openapi.get("components") or {}).get("schemas") or {}
+    for path, item in (openapi.get("paths") or {}).items():
+        post = item.get("post") if isinstance(item, dict) else None
+        if not post or "/requests" in path:
+            continue
+        schema = (((post.get("requestBody") or {}).get("content") or {})
+                  .get("application/json") or {}).get("schema") or {}
+        ref = schema.get("$ref")
+        if ref:
+            schema = schemas.get(ref.split("/")[-1]) or {}
+        return schema.get("properties") or {}, list(schema.get("required") or [])
+    return {}, []
+
+
+def _enum(prop):
+    """Every enum value of a schema property, including those inside ``anyOf``."""
+    values = list(prop.get("enum") or []) if isinstance(prop, dict) else []
+    for sub in (prop.get("anyOf") or []) if isinstance(prop, dict) else []:
+        if isinstance(sub, dict):
+            values += list(sub.get("enum") or [])
+    return [str(v) for v in values]
+
+
+_BLACK_EDITS = re.compile(r"\bblack\b[^.]*\b(edit|inpaint|fill|replac|chang|regenerat)")
+_WHITE_EDITS = re.compile(r"\bwhite\b[^.]*\b(edit|inpaint|fill|replac|chang|regenerat|remov)")
+
+
+def _mask_inverted(prop):
+    """True if the schema says black marks the area to change (GenFill: white = fill)."""
+    text = str((prop or {}).get("description") or "").lower()
+    return bool(_BLACK_EDITS.search(text)) and not _WHITE_EDITS.search(text)
+
+
+def spec_from_openapi(model):
+    """A :class:`ModelSpec` for one expanded model, or ``None`` if GenFill can't drive it.
+
+    Maps the input schema onto the curated ``extra`` keys: ``image_url``/``image_urls`` input,
+    ``mask_url`` (or ``mask_image_url``) makes it a mask model, plus prompt, negative prompt,
+    ``num_images``, ``seed``, ``output_format`` and ``quality`` when the schema has them.
+    """
+    eid = str(model.get("endpoint_id") or "")
+    props, required = _input_schema(model.get("openapi"))
+    if not eid or not props or any(r not in _FILLED for r in required):
+        return None
+    if "image_url" in props:
+        image_field = "image_url"
+    elif "image_urls" in props:
+        image_field = "image_urls"
+    else:
+        return None
+    mask_field = next((f for f in ("mask_url", "mask_image_url") if f in props), None)
+    has_prompt = "prompt" in props
+    if not mask_field and not has_prompt:
+        return None   # a reference edit needs an instruction
+    meta = model.get("metadata") or {}
+    label = str(meta.get("display_name") or eid).strip()
+    extra = {"image_field": image_field}
+    if mask_field:
+        kind = "inpaint" if has_prompt else "erase"
+        extra["mask_field"] = mask_field
+        if _mask_inverted(props[mask_field]):
+            extra["mask_invert"] = True
+    else:
+        kind = "edit"
+        label += " (reference edit)"
+        if image_field == "image_urls":
+            extra["mask_as_image"] = True
+    if has_prompt:
+        extra["prompt_required"] = "prompt" in required
+    else:
+        extra["prompt_field"] = None
+    if "negative_prompt" in props:
+        extra["negative_field"] = "negative_prompt"
+    max_count = 1
+    count = props.get("num_images")
+    if isinstance(count, dict):
+        extra["count_field"] = "num_images"
+        try:
+            max_count = max(1, min(8, int(count.get("maximum") or 4)))
+        except (TypeError, ValueError):
+            max_count = 4
+    if "seed" in props:
+        extra["seed_field"] = "seed"
+    formats = _enum(props.get("output_format"))
+    extra["output_format"] = "output_format" in props and (not formats or "png" in formats)
+    qualities = _enum(props.get("quality"))
+    if all(q in qualities for q in ("low", "medium", "high")):
+        extra["quality_field"] = "quality"
+    note = str(meta.get("description") or "").strip()
+    return ModelSpec(eid, label, kind=kind, max_count=max_count, note=note[:160], **extra)
+
+
+def _models_get(url, headers):
+    status, _, data = base.http_request("GET", url, None, headers, 60)
+    if status == 429:
+        raise BackendError("fal.ai's model list is rate limited; try again in a minute.")
+    _raise_fal(status, data)
+    return _json(data)
+
+
+def _quote(text):
+    from urllib.parse import quote
+    return quote(str(text), safe="/")
+
+
+def _log_warning(msg, *args):
+    try:
+        from .. import log as gflog
+        gflog.warning(msg, *args)
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------

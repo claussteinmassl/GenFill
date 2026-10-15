@@ -24,7 +24,9 @@ import time
 
 from .base import (EDIT_EMPTY_PROMPT, EDIT_PROMPT_SUFFIX, BackendError, Cancelled, ModelSpec,
                    check_image, download)
+from . import discovery
 from .cloud import McpBackend, collect, finish, poll, progress_step, put_bytes, ref_prompt
+from .oauth import LoginRequired
 from .. import region
 
 MAX_SEED = 2147483647
@@ -104,6 +106,49 @@ _CATALOGUE = (
 )
 
 
+MAX_EXPLORE_PAGES = 5
+# Media roles that carry the crop (preferred first) and the roles GenFill can fill.
+_IMAGE_ROLES = ("image_references", "image")
+# Workflow tools that are not image edits (characters, ads, upscalers, routers, sprites).
+_EXPLORE_SKIP = ("soul_", "ms_", "marketing_", "image_auto", "autosprite", "3d_jutsu",
+                 "outpaint", "topaz", "upscale", "decompose", "background", "cinematic_studio_soul")
+
+
+def explore_specs(items):
+    """Edit specs from ``models_explore`` items.
+
+    Kept: a public provider (internal tools have an empty ``provider_name``), an image or mask
+    media role, a non-empty aspect-ratio list and no required parameter GenFill can't fill.
+    """
+    specs = []
+    for item in items:
+        mid = str(item.get("id") or "")
+        if (not mid or not str(item.get("provider_name") or "").strip()
+                or not str(item.get("description") or "").strip()
+                or any(k in mid for k in _EXPLORE_SKIP)):
+            continue
+        roles = set()
+        for media in item.get("medias") or []:
+            if isinstance(media, dict) and media.get("type", "image") == "image":
+                roles.update(str(r) for r in media.get("roles") or [])
+        role = next((r for r in _IMAGE_ROLES if r in roles), None)
+        ratios = discovery.ratio_list(item.get("aspect_ratios"))
+        params = dict((str(p.get("name")), p) for p in item.get("parameters") or []
+                      if isinstance(p, dict))
+        if (not role or not ratios
+                or any(str(p.get("required")) == "required" for p in params.values())):
+            continue
+        resolution = discovery.smallest_resolution(
+            (params.get("resolution") or {}).get("options"))
+        quality = discovery.quality_map((params.get("quality") or {}).get("options"))
+        kw = dict(resolution=resolution, quality=quality, seed="seed" in params, role=role,
+                  note=str(item.get("description") or "").strip()[:160])
+        if "mask" in roles:
+            kw = _masked(inpaint_flag="is_inpaint" in params, **kw)
+        specs.append(_spec(mid, str(item.get("name") or mid), ratios, **kw))
+    return specs
+
+
 def nearest_ratio(width, height, ratios):
     """The ``"w:h"`` string in ``ratios`` closest to ``width`` x ``height`` (log scale)."""
     a = math.log(float(width) / float(height))
@@ -123,6 +168,26 @@ class HiggsfieldBackend(McpBackend):
     default_model = "gpt_image_2_5"
     catalogue = _CATALOGUE
     models = tuple(m.id for m in _CATALOGUE)
+    discoverable = True
+
+    def discover(self, api_key=""):
+        """Live catalogue from ``models_explore`` (image models that take an image or mask)."""
+        if not self.provider().signed_in():
+            raise LoginRequired("Not signed in to Higgsfield (API Keys & Accounts...).")
+        client = self.client(api_key, interactive=False)
+        items, after = [], None
+        for _ in range(MAX_EXPLORE_PAGES):
+            args = {"action": "list", "type": "image", "limit": 100}
+            if after:
+                args["after"] = after
+            out = client.call_tool("models_explore", args)
+            if not isinstance(out, dict):
+                raise BackendError("Higgsfield models_explore returned an unexpected answer.")
+            items += [i for i in out.get("items") or [] if isinstance(i, dict)]
+            after = out.get("next_page_token")
+            if not out.get("has_more") or not after:
+                break
+        return explore_specs(items)
 
     def model_size(self, width, height, model=""):
         ratios = self.model_spec(model).extra.get("ratios") or _BASIC
