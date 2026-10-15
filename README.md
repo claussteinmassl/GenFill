@@ -226,6 +226,7 @@ Source ── GenerativeFill ── output
 | Prompt bar + **Generate** | What to generate. Empty = remove. Enter generates |
 | Model menu | Backend picker (ComfyUI, cloud providers) |
 | Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
+| Cost line (under Generate) | What the next Generate costs with the current model, resolution, quality and number of variations, plus the credit balance where the provider has one: "30 credits for 3 · balance 243,317 (Premium+)", "≈ $0.58 for 3", "free (your GPU)". "≈" marks an estimate. See [Costs and balance](#costs-and-balance) |
 | Variations | Thumbnails of every generation; ‹ › to browse; right-click for reuse prompt / reveal / delete |
 | **selection from** | *Shapes (built-in Roto)* (default), *Mask input*, or *Source alpha* |
 | **✏ Draw Selection** | Switches to Shapes and makes sure the Roto tools are in the Viewer |
@@ -304,6 +305,28 @@ the backend's default; you can also type any model id the provider accepts.
 Hover an entry in the menu for its note (cost, strengths). Magnific was verified end to end
 against the live service through GenFill's own code (browser sign-in, upload, Retouch erase,
 download). The other new backends are covered by unit tests with mocked services.
+
+### Costs and balance
+
+The panel's cost line is refreshed in the background (about half a second after you change
+model, version, resolution, quality or variations; quotes are cached for 5 minutes, the balance
+for 60 seconds and after every generation). It never asks you to sign in and Generate never
+waits for it. Quotes use the size the next Generate sends (last selection, else the plate).
+
+| Backend | Cost shown | Balance |
+|---|---|---|
+| Magnific | Exact credits from Magnific's own cost preview for the request GenFill would send (Retouch: one call per variation) | Credits available and plan |
+| Higgsfield | Credits from Higgsfield's cost preview for one image, times the variations ("≈" for more than one) | Credits and plan |
+| Comfy Cloud | Mask models (Flux Fill, Bria, Recraft): Comfy's credit estimate of the graph. Partner models: "billed in Comfy credits" (Comfy can't price them in advance) | none (Comfy has no balance query) |
+| ComfyUI | "free (your GPU)"; workflows with Comfy API nodes: "Comfy credits (API nodes)" | none |
+| fal.ai | USD from fal's pricing API with your key; without an answer, fal's published prices for some models; otherwise "cost unknown" | none (needs an admin key) |
+| OpenAI | ≈ USD from OpenAI's per-token image prices (auto quality counted as high) | none (needs an admin key) |
+| Stability AI | ≈ 5 credits ($0.05) per variation | Credits, if Stability's balance endpoint answers |
+| Offline Preview | free | none |
+
+"sign in to see cost" means the provider needs a sign-in first (API Keys & Accounts...);
+"cost unknown" means the provider gave no price for this model (newly discovered models often
+have none). Providers bill the actual usage; their price lists can change.
 
 ### How ComfyUI runs
 

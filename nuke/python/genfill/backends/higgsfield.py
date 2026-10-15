@@ -27,7 +27,7 @@ from .base import (EDIT_EMPTY_PROMPT, EDIT_PROMPT_SUFFIX, BackendError, Cancelle
 from . import discovery
 from .cloud import McpBackend, collect, finish, poll, progress_step, put_bytes, ref_prompt
 from .oauth import LoginRequired
-from .. import region
+from .. import pricing, region
 
 MAX_SEED = 2147483647
 WAIT_SECONDS = 15           # jobs_wait long-poll limit on the server
@@ -217,17 +217,19 @@ class HiggsfieldBackend(McpBackend):
         return region.scale_to_pixel_budget(a, b, budget, 16, min_side=256)
 
     def _params(self, request, spec, prompt, media_id, ratio, seed, mask_id=None):
-        medias = [{"role": spec.extra.get("media_role") or "image_references",
-                   "value": media_id}]
-        if mask_id:
-            medias.append({"role": "mask", "value": mask_id})
+        """One request's params; ``media_id`` None (a cost quote) sends no medias."""
         params = {
             "model": spec.id,
             "prompt": prompt,
-            "medias": medias,
             "aspect_ratio": ratio,
             "use_unlim": False,
         }
+        if media_id:
+            medias = [{"role": spec.extra.get("media_role") or "image_references",
+                       "value": media_id}]
+            if mask_id:
+                medias.append({"role": "mask", "value": mask_id})
+            params["medias"] = medias
         if mask_id and spec.extra.get("inpaint_flag"):
             params["is_inpaint"] = True
         tier = self.request_tier(request, spec.id)
@@ -251,11 +253,7 @@ class HiggsfieldBackend(McpBackend):
         ratio = nearest_ratio(request.width, request.height,
                               spec.extra.get("ratios") or _BASIC)
         masked = bool(spec.extra.get("mask"))
-        text = request.prompt.strip()
-        if masked:
-            prompt = text + EDIT_PROMPT_SUFFIX if text else EDIT_EMPTY_PROMPT
-        else:
-            prompt = ref_prompt(text)
+        prompt = self._prompt(spec, request)
         count = max(1, min(request.count, 12))
         base_seed = request.seed or random.randint(1, MAX_SEED - count)
         client = self.client(api_key, progress, cancelled)
@@ -287,6 +285,48 @@ class HiggsfieldBackend(McpBackend):
         images, _ = collect(urls, lambda url: check_image(download(url), "Higgsfield"),
                             cancelled, errors)
         return finish(images, errors, "Higgsfield")
+
+    @staticmethod
+    def _prompt(spec, request):
+        text = request.prompt.strip()
+        if spec.extra.get("mask"):
+            return text + EDIT_PROMPT_SUFFIX if text else EDIT_EMPTY_PROMPT
+        return ref_prompt(text)
+
+    # -- cost and balance ----------------------------------------------------
+
+    def estimate(self, request, api_key=""):
+        """``generate_image`` with ``get_cost: true`` (submits nothing) for one image.
+
+        Generate sends one batch entry per variation, so the total is N x the one-image quote.
+        A live check found ``count`` ignored by the quote (count 3 cost the same as count 1),
+        hence the quote is for count 1; a multi-image total is marked approximate. The quote
+        is taken without the input image (media ids must be real uploads).
+        """
+        client = self.quiet_client(api_key)
+        spec = self.model_spec(request.model)
+        ratio = nearest_ratio(request.width, request.height, spec.extra.get("ratios") or _BASIC)
+        count = max(1, min(request.count, 12))
+        params = self._params(request, spec, self._prompt(spec, request), None, ratio,
+                              request.seed or 1)
+        params.update(get_cost=True, count=1)
+        out = client.call_tool("generate_image", {"params": params,
+                                                  "context": "GenFill cost preview"})
+        cost = out.get("cost") if isinstance(out, dict) else None
+        credits = None
+        if isinstance(cost, dict):
+            credits = cost.get("credits_exact", cost.get("credits"))
+        if not isinstance(credits, (int, float)):
+            raise BackendError("Higgsfield returned no cost: %s" % str(out)[:200])
+        return pricing.per_image(credits, count, pricing.CREDITS, exact=count == 1)
+
+    def balance(self, api_key=""):
+        """``balance``: credits and the subscription plan."""
+        out = self.quiet_client(api_key).call_tool("balance", {})
+        if not isinstance(out, dict) or not isinstance(out.get("credits"), (int, float)):
+            return None
+        plan = str(out.get("subscription_plan_type") or "").replace("_", " ").strip()
+        return pricing.Balance(out["credits"], plan[:1].upper() + plan[1:])
 
     # -- steps ---------------------------------------------------------------
 

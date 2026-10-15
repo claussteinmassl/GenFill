@@ -32,7 +32,7 @@ import time
 from .base import (EDIT_EMPTY_PROMPT, BackendError, Cancelled, ModelSpec,
                    check_image, download)
 from .cloud import McpBackend, collect, finish, poll, put_bytes, ref_prompt
-from .. import region
+from .. import pricing, region
 
 MAX_SEED = 2147483646
 WAIT_SECONDS = 60          # per wait_for_job call
@@ -159,6 +159,21 @@ def build_fill_graph(image_name, mask_name, prompt, seeds, spec, negative_prompt
                        "inputs": {"images": [fill, 0], "filename_prefix": "genfill_%d" % (i + 1)},
                        "_meta": {"title": "GenFill Result %d" % (i + 1)}}
     return graph
+
+
+ESTIMATE_RE = re.compile(r"Estimated total:\s*([\d.,]+)\s*credits", re.I)
+
+
+def parse_estimate(result):
+    """Credits from an ``estimate_credits`` answer ("Estimated total: 21 credits"), or None."""
+    text = result if isinstance(result, str) else json.dumps(result)
+    m = ESTIMATE_RE.search(text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def parse_upload_url(result):
@@ -308,6 +323,29 @@ class ComfyCloudBackend(McpBackend):
             return {"size": "%dx%d" % (request.width, request.height)}
         field, values = how
         return {field: values[tier]} if tier in values else {}
+
+    # ---- cost -----------------------------------------------------------------
+    def estimate(self, request, api_key=""):
+        """``estimate_credits`` on the graph Generate would submit (mask node models).
+
+        Partner models (``partner_generate``) can't be priced by the server: a note only.
+        Comfy Cloud has no balance tool (only usage reports), so ``balance`` stays None.
+        """
+        spec = self.model_spec(request.model)
+        if not request.prompt.strip() and spec.erase:
+            spec = self.model_spec(spec.erase)
+        node = NODES.get(spec.id) if spec.id not in PARTNER_SLUGS else None
+        if node is None:
+            return pricing.Quote(None, note="billed in Comfy credits", count=request.count)
+        count = request.count if node.seeded else 1
+        graph = build_fill_graph("genfill_plate.png", "genfill_mask.png",
+                                 request.prompt.strip() or EDIT_EMPTY_PROMPT,
+                                 [i + 1 for i in range(count)], node, request.negative_prompt)
+        text = self.quiet_client(api_key).call_tool("estimate_credits", {"workflow": graph})
+        credits = parse_estimate(text)
+        if credits is None:
+            raise BackendError("Comfy Cloud estimate_credits gave no total.")
+        return pricing.Quote(credits, pricing.CREDITS, False, count=count)
 
     # ---- generation ---------------------------------------------------------
     def generate(self, request, api_key, progress=None, cancelled=None):

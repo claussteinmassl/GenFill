@@ -11,7 +11,7 @@ import json
 
 from .base import (EDIT_EMPTY_PROMPT, EDIT_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
                    encode_multipart, http_post)
-from .. import region
+from .. import pricing, region
 
 URL = "https://api.openai.com/v1/images/edits"
 
@@ -56,6 +56,13 @@ class OpenAIBackend(Backend):
         w, h = region.scale_to_pixel_budget(width, height, budget, 16, min_side=256,
                                             max_side=MAX_SIDE, max_aspect=3.0)
         return region.clamp_pixels(w, h, 16, MIN_PIXELS, MAX_PIXELS)
+
+    def estimate(self, request, api_key=""):
+        """Approximate USD from OpenAI's token prices (no quote endpoint, no balance API)."""
+        model = self._model(request.model)
+        quality = request.quality if request.quality in ("low", "medium", "high") else "high"
+        return pricing.openai_estimate(model, request.width, request.height, quality,
+                                       request.count, fidelity=model in FIDELITY_MODELS)
 
     def generate(self, request, api_key, progress=None, cancelled=None):
         if not api_key:

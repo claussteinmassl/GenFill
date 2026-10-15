@@ -19,7 +19,7 @@ from .base import (BackendError, Cancelled, ModelSpec, check_image, download, se
 from .cloud import (McpBackend, collect, finish, pause, poll, progress_step, put_bytes,
                     ref_prompt)
 from .oauth import LoginRequired
-from .. import region
+from .. import pricing, region
 
 SERVER_URL = "https://mcp.magnific.com"
 PIXEL_BUDGET = 1024 * 1024
@@ -210,6 +210,37 @@ class MagnificBackend(McpBackend):
                             cancelled, errors)
         return finish(images, errors, "Magnific")
 
+    # ---- cost and balance -----------------------------------------------------------
+    def estimate(self, request, api_key=""):
+        """``simulate_cost`` with the arguments Generate would send (read-only, exact).
+
+        Retouch has no count, so the total is N x the per-call quote; ``images_generate``
+        quotes all ``count`` images in one call.
+        """
+        client = self.quiet_client(api_key)
+        spec = self.model_spec(request.model)
+        count = max(1, min(int(request.count), 8))
+        if spec.kind == "inpaint":
+            tool, args, calls = "images_retouch", self._retouch_args(spec, request), count
+        else:
+            tool, args, calls = "images_generate", self._edit_args(spec, request, None, count), 1
+        res = _call(client, "simulate_cost", {"tool": tool, "arguments": args})
+        if res.get("isUnlimited"):
+            return pricing.Quote(0, pricing.FREE, note="unlimited on your plan", count=count)
+        credits = res.get("credits")
+        if not isinstance(credits, (int, float)):
+            raise BackendError("Magnific simulate_cost returned no credits: %s" % _trim(res))
+        exact = str(res.get("certainty") or "exact") == "exact"
+        return pricing.Quote(credits * calls, pricing.CREDITS, exact, count=count)
+
+    def balance(self, api_key=""):
+        """``account_balance``: ``credits.available`` and the plan's product name."""
+        res = _call(self.quiet_client(api_key), "account_balance", {})
+        credits = (res.get("credits") or {}).get("available")
+        if not isinstance(credits, (int, float)):
+            return None
+        return pricing.Balance(credits, (res.get("plan") or {}).get("productName") or "")
+
     def _upload(self, client, request, check):
         """Upload plate and mask; returns their creation identifiers."""
         targets = _call(client, "creations_request_upload",
@@ -234,18 +265,25 @@ class MagnificBackend(McpBackend):
                                % _trim(res.get("errors") or res))
         return done[0]["identifier"], done[1]["identifier"]
 
-    def _submit_retouch(self, client, spec, request, plate_id, mask_id, count, check, errors):
-        """Queue one retouch job per variation; a failure keeps the jobs already queued."""
+    def _retouch_args(self, spec, request, plate_id=None, mask_id=None):
+        """``images_retouch`` arguments (one call per variation); no ids for a quote."""
         prompt = request.prompt.strip()
         erase = not prompt or spec.extra.get("erase_only")
         model = (spec.erase or spec.id) if erase else spec.id
-        args = {"creationIdentifier": plate_id, "maskCreationIdentifier": mask_id,
-                "mode": "erase" if erase else "replace", "model": model}
+        args = {"mode": "erase" if erase else "replace", "model": model}
+        if plate_id:
+            args["creationIdentifier"] = plate_id
+            args["maskCreationIdentifier"] = mask_id
         if not erase:
             args["prompt"] = prompt
         resolution = self._resolution_arg(self.model_spec(model), request)
         if resolution:
             args["resolution"] = resolution
+        return args
+
+    def _submit_retouch(self, client, spec, request, plate_id, mask_id, count, check, errors):
+        """Queue one retouch job per variation; a failure keeps the jobs already queued."""
+        args = self._retouch_args(spec, request, plate_id, mask_id)
         ids = []
         for i in range(count):
             check()
@@ -265,9 +303,12 @@ class MagnificBackend(McpBackend):
             ids.append(creation["identifier"])
         return ids
 
-    def _submit_edit(self, client, spec, request, plate_id, count):
-        args = {"prompt": ref_prompt(request.prompt), "mode": spec.id, "count": count,
-                "references": [{"type": "image", "identifier": plate_id}]}
+    def _edit_args(self, spec, request, plate_id=None, count=1):
+        """``images_generate`` arguments; without ``plate_id`` (a quote) no references,
+        because ``simulate_cost`` only accepts identifiers of real creations."""
+        args = {"prompt": ref_prompt(request.prompt), "mode": spec.id, "count": count}
+        if plate_id:
+            args["references"] = [{"type": "image", "identifier": plate_id}]
         seed = request.seed & 0xFFFFFFFF    # images_generate takes 0..4294967295
         if seed:
             args["seed"] = seed
@@ -281,7 +322,10 @@ class MagnificBackend(McpBackend):
         quality = (spec.extra.get("quality") or {}).get((request.quality or "auto").lower())
         if quality:
             args["quality"] = quality
-        res = _call(client, "images_generate", args)
+        return args
+
+    def _submit_edit(self, client, spec, request, plate_id, count):
+        res = _call(client, "images_generate", self._edit_args(spec, request, plate_id, count))
         ids = [c.get("identifier") for c in res.get("creations") or [] if isinstance(c, dict)]
         if not ids or not all(ids):
             raise BackendError("Magnific did not queue the image job: %s" % _trim(res))

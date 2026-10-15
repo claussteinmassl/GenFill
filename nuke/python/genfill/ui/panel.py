@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 
 from .qt import QtCore, QtGui, QtWidgets, Qt
 from . import style
@@ -39,6 +40,7 @@ THUMB_W = 132
 THUMB_H = 92
 COLUMNS = 3
 POLL_MS = 300
+COST_DEBOUNCE = 0.6     # seconds after a settings change before the cost is fetched
 REFRESH_ITEM = "__genfill_refresh_models__"   # item data of the "Refresh model list" entry
 
 
@@ -80,8 +82,12 @@ class NukeController(object):
     def signature(self):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
-                n["gf_model"].value(), self.quality(), self.resolution(),
+                n["gf_model"].value(), self.quality(), self.resolution(), self.variations(),
                 tuple(sorted(self._engine.status(n).items())))
+
+    def variations(self):
+        knobs = self.node.knobs()
+        return int(knobs["gf_variations"].value()) if "gf_variations" in knobs else 1
 
     def _choice(self, name, default):
         knobs = self.node.knobs()
@@ -114,6 +120,32 @@ class NukeController(object):
         """``"sends 2048 x 1152 (2K)"`` for the current model and setting, or ""."""
         plan = self._engine.size_plan(self.node)
         return plan.text() if plan is not None else ""
+
+    def cost_snapshot(self):
+        """Plain settings for :mod:`pricing` (main thread), or None without a plate."""
+        from .. import config, pricing
+        b = self._gfnode.backend_for(self.node)
+        plan = self._engine.size_plan(self.node, b)
+        if plan is None:
+            return None
+        return pricing.snapshot(b, self.model_version(), self.quality(),
+                                self._engine.resolution(self.node),
+                                max(1, min(10, self.variations())), plan.width, plan.height,
+                                self.prompt(), config.get_api_key(b.id, b.env_var))
+
+    def request_cost(self, snap):
+        """Fetch quote and balance on a worker thread (no-op while cached)."""
+        from .. import pricing
+        pricing.request(snap)
+
+    def cost_text(self, snap):
+        """``(text, tooltip)`` of the cost line from the cache."""
+        from .. import pricing
+        return pricing.lookup(snap)
+
+    def forget_balance(self):
+        from .. import pricing
+        pricing.forget_balance(self._gfnode.backend_for(self.node).id)
 
     def prompt(self):
         return self.node["gf_prompt"].value()
@@ -384,14 +416,22 @@ class GenFillPanel(QtWidgets.QWidget):
         self.ctl = controller
         self._sig = None
         self._thumb_sig = None
+        self._cost_snap = None      # pricing snapshot of the current settings
+        self._cost_key = None
+        self._cost_due = None       # time.time() when the debounced fetch starts
+        self._was_running = False
         self.setObjectName("GenFillPanel")
         self.setStyleSheet(style.STYLESHEET)
         self._build()
         self.ctl.refresh()
         self._sync(force=True)
         self._timer = QtCore.QTimer(self)
-        self._timer.timeout.connect(self._sync)
+        self._timer.timeout.connect(self._tick)
         self._timer.start(POLL_MS)
+
+    def _tick(self):
+        self._sync()
+        self._poll_cost()
 
     # Nuke PyCustom_Knob protocol ---------------------------------------
     def makeUI(self):
@@ -511,6 +551,14 @@ class GenFillPanel(QtWidgets.QWidget):
         bl.setAlignment(self.prompt, Qt.AlignVCenter)
         bl.addWidget(self.generate_btn)
         root.addWidget(bar)
+
+        # Cost of the next Generate (and the credit balance where the provider has one)
+        self.cost_info = QtWidgets.QLabel("")
+        self.cost_info.setObjectName("gfMuted")
+        self.cost_info.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.cost_info.setWordWrap(True)
+        self.cost_info.setVisible(False)
+        root.addWidget(self.cost_info)
 
         # Progress / status
         self.progress = QtWidgets.QProgressBar()
@@ -865,6 +913,65 @@ class GenFillPanel(QtWidgets.QWidget):
             except Exception:
                 pass
         self.size_info.setText(text)
+        self._cost_settings()
+
+    # cost -------------------------------------------------------------------
+    def _cost_settings(self):
+        """Settings changed: take a new snapshot; a new price key is fetched debounced."""
+        if not hasattr(self.ctl, "cost_snapshot"):
+            return
+        try:
+            snap = self.ctl.cost_snapshot()
+        except Exception as exc:   # never break the panel over a cost estimate
+            snap = None
+            self._log_cost_error(exc)
+        from .. import pricing
+        key = pricing.key(snap) if snap is not None else None
+        self._cost_snap = snap
+        if key != self._cost_key:
+            self._cost_key = key
+            self._cost_due = time.time() + COST_DEBOUNCE if key is not None else None
+
+    def _poll_cost(self):
+        """Timer: start a due fetch, refresh the balance after a generation, show the line."""
+        if not hasattr(self.ctl, "cost_snapshot"):
+            return
+        try:
+            running = bool(self.ctl.status().get("running"))
+            if self._was_running and not running:
+                self.ctl.forget_balance()          # the generation spent credits
+                self._cost_due = time.time()
+            self._was_running = running
+            snap = self._cost_snap
+            if snap is None:
+                self.cost_info.setVisible(False)
+                return
+            if self._cost_due is not None and time.time() >= self._cost_due and not running:
+                self._cost_due = None
+                self.ctl.request_cost(snap)
+            text, tip = self.ctl.cost_text(snap)
+            text = text or u"estimating cost\u2026"    # debouncing a new setting
+        except Exception as exc:
+            self._log_cost_error(exc)
+            text, tip = "cost unknown", str(exc)
+        if self.cost_info.text() != text:
+            self.cost_info.setText(text)
+        tip = ("Estimated cost of the next Generate with the current model, resolution, "
+               "quality and number of variations." + ("\n" + tip if tip else ""))
+        if self.cost_info.toolTip() != tip:
+            self.cost_info.setToolTip(tip)
+        self.cost_info.setVisible(bool(text))
+
+    def _log_cost_error(self, exc):
+        key = str(exc)
+        if key == getattr(self, "_last_cost_error", None):
+            return
+        self._last_cost_error = key
+        try:
+            from .. import log as gflog
+            gflog.warning("cost preview failed: %s", exc)
+        except Exception:
+            pass
 
     def _rebuild_grid(self, thumbs):
         while self.grid.count():

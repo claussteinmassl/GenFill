@@ -25,7 +25,7 @@ from . import comfy_workflows
 from .base import (BackendError, Backend, Cancelled, check_image, encode_multipart, http_json,
                    http_request, raise_for_status)
 from .cloud import collect, finish, poll, progress_step
-from .. import region
+from .. import pricing, region
 
 MAX_SEED = 2 ** 31 - 1
 POLL_INTERVAL = 1.0        # seconds between /history polls
@@ -242,6 +242,18 @@ class ComfyUIBackend(Backend):
             budget = self.tier_budget(width, height, model, resolution, 1024 * 1024)
             return region.scale_to_pixel_budget(width, height, budget, 64, min_side=512,
                                                 max_side=2048, max_aspect=3.0)
+
+    def estimate(self, request, api_key=""):
+        """Free on your own GPU; a workflow with Comfy API nodes bills Comfy credits."""
+        try:
+            wf = self.workflow(request.model)
+            if not request.prompt.strip() and wf.empty_prompt:
+                wf = self.workflow(wf.empty_prompt)
+        except BackendError:
+            return None
+        if wf.api_nodes:
+            return pricing.Quote(None, note="Comfy credits (API nodes)", count=request.count)
+        return pricing.Quote(0, pricing.FREE, note="free (your GPU)", count=request.count)
 
     # ---- generation ---------------------------------------------------------
     def generate(self, request, api_key, progress=None, cancelled=None):

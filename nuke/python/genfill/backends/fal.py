@@ -26,7 +26,7 @@ from . import base
 from .base import (REF_EMPTY_PROMPT, REF_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
                    ModelSpec, tiers_from)
 from .cloud import collect, finish
-from .. import pngio, region
+from .. import pngio, pricing, region
 
 QUEUE_ROOT = "https://queue.fal.run"
 REST_ROOT = "https://rest.fal.ai"
@@ -226,6 +226,33 @@ class FalBackend(Backend):
                                             max_side=x.get("tier_max_side"), max_aspect=3.0)
         return region.clamp_pixels(w, h, multiple, x.get("min_pixels"), x.get("max_pixels"))
 
+    # ------------------------------------------------------------------- cost
+
+    def estimate(self, request, api_key=""):
+        """USD for ``count`` images: fal's pricing API with the artist's key, else the
+        keyless price notes in :mod:`pricing`; None (cost unknown) for unpriced models.
+        fal has no balance API for normal keys."""
+        spec = self.model_spec(request.model)
+        if not request.prompt.strip() and spec.erase:
+            spec = self.model_spec(spec.erase)
+        count = max(1, int(request.count))
+        if api_key:
+            try:
+                status, _, data = base.http_request(
+                    "GET", "%s?endpoint_id=%s" % (PRICING_API, _quote(spec.id)), None,
+                    {"Authorization": "Key %s" % api_key, "Accept": "application/json"}, 20)
+                info = _json_or_none(data) if status < 400 else None
+                quote = pricing.fal_pricing(info, spec.id, request.width, request.height,
+                                            count) if info is not None else None
+                if quote is not None:
+                    return quote
+            except BackendError:
+                pass
+        return pricing.fal_static(spec.id, request.width, request.height,
+                                  request.quality if request.quality in ("low", "medium", "high")
+                                  else (spec.extra.get("fixed") or {}).get("quality", "auto"),
+                                  count)
+
     # --------------------------------------------------------------- generate
 
     def generate(self, request, api_key, progress=None, cancelled=None):
@@ -380,6 +407,7 @@ class FalBackend(Backend):
 # --------------------------------------------------------------------------
 
 MODELS_API = "https://api.fal.ai/v1/models"
+PRICING_API = "https://api.fal.ai/v1/models/pricing"
 MODELS_PAGES = 2          # most used first; two pages of 100 cover the relevant edit models
 MODELS_CANDIDATES = 30    # OpenAPI lookups (10 per call; the keyless API rate-limits)
 MODELS_PAUSE = 1.0

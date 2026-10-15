@@ -477,5 +477,90 @@ class MagnificTests(unittest.TestCase):
                 self.run_with(tools, self.request(count=1), cancelled=cancelled)
 
 
+GENERATION_TOOLS = ("images_retouch", "images_generate", "creations_request_upload",
+                    "creations_finalize_upload", "creations_wait")
+
+
+class MagnificCostTests(unittest.TestCase):
+    """Cost preview and balance: simulate_cost / account_balance only, never a generation."""
+
+    def setUp(self):
+        self.backend = MagnificBackend()
+
+    def quote(self, credits, **kw):
+        args = dict(image_path=None, mask_path=None, mask_alpha_path=None, prompt="a red car",
+                    width=1024, height=1024, count=3, model="retouch-auto", quality="auto")
+        args.update(kw)
+        client = FakeClient({"simulate_cost": lambda a: {"credits": credits,
+                                                         "isUnlimited": False,
+                                                         "certainty": "exact"}})
+        with mock.patch.object(MagnificBackend, "quiet_client", return_value=client):
+            q = self.backend.estimate(base.GenerationRequest(**args), "")
+        for tool in GENERATION_TOOLS:
+            self.assertEqual(client.named(tool), [], tool)
+        return q, client.named("simulate_cost")
+
+    def test_retouch_is_n_times_one_call(self):
+        q, calls = self.quote(10)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["tool"], "images_retouch")
+        self.assertEqual(calls[0]["arguments"],
+                         {"mode": "replace", "model": "retouch-auto", "prompt": "a red car"})
+        self.assertEqual((q.amount, q.unit, q.exact, q.count), (30, "credits", True, 3))
+        self.assertEqual(q.text(), "30 credits for 3")
+
+    def test_retouch_erase_and_resolution(self):
+        _, calls = self.quote(150, prompt="", model="retouch-inpaint-lab-nano-banana-pro",
+                              resolution="4K", width=4096, height=4096, count=1)
+        self.assertEqual(calls[0]["arguments"]["mode"], "erase")
+        q, calls = self.quote(150, model="retouch-inpaint-lab-nano-banana-pro",
+                              resolution="4K", width=4096, height=4096, count=1)
+        self.assertEqual(calls[0]["arguments"]["resolution"], "4k")
+        self.assertNotIn("creationIdentifier", calls[0]["arguments"])
+
+    def test_edit_quotes_all_images_without_references(self):
+        q, calls = self.quote(45, model="gpt-2", quality="low", resolution="1K")
+        args = calls[0]["arguments"]
+        self.assertEqual(calls[0]["tool"], "images_generate")
+        self.assertEqual(args["count"], 3)
+        self.assertEqual(args["mode"], "gpt-2")
+        self.assertEqual(args["quality"], "low")
+        self.assertEqual((args["width"], args["height"]), (1024, 1024))
+        self.assertNotIn("references", args)
+        self.assertEqual(q.amount, 45)     # one call covers every image
+
+    def test_generate_args_unchanged(self):
+        spec = self.backend.model_spec("gpt-2")
+        req = base.GenerationRequest(None, None, None, "x", 1024, 1024, seed=5, count=2,
+                                     model="gpt-2")
+        args = self.backend._edit_args(spec, req, "PLATE", 2)
+        self.assertEqual(args["references"], [{"type": "image", "identifier": "PLATE"}])
+        self.assertEqual(args["seed"], 5)
+        rargs = self.backend._retouch_args(self.backend.model_spec("retouch-auto"), req,
+                                           "PLATE", "MASK")
+        self.assertEqual((rargs["creationIdentifier"], rargs["maskCreationIdentifier"]),
+                         ("PLATE", "MASK"))
+
+    def test_balance(self):
+        client = FakeClient({"account_balance": lambda a: {
+            "plan": {"tier": "magnific", "productName": "Premium+", "isPaidPlan": True,
+                     "isUnlimitedMode": False, "unlimitedAppliesHere": False},
+            "credits": {"available": 243317, "totalPlan": 570000, "spent": 326683,
+                        "hasExtraCredits": True, "scope": "personal"}}})
+        with mock.patch.object(MagnificBackend, "quiet_client", return_value=client):
+            b = self.backend.balance("")
+        self.assertEqual(b.text(), "balance 243,317 (Premium+)")
+
+    def test_quote_needs_sign_in_without_browser(self):
+        from genfill.backends.oauth import LoginRequired
+        provider = mock.Mock()
+        provider.signed_in.return_value = False
+        with mock.patch.object(MagnificBackend, "provider", return_value=provider), \
+                mock.patch.object(MagnificBackend, "client") as client:
+            with self.assertRaises(LoginRequired):
+                self.backend.estimate(base.GenerationRequest(None, None, None, "", 64, 64), "")
+        client.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

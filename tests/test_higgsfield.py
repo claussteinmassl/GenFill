@@ -305,5 +305,62 @@ class HiggsfieldTests(unittest.TestCase):
         self.assertEqual(higgsfield.nearest_ratio(1168, 880, ["1:1", "4:3", "16:9"]), "4:3")
 
 
+class HiggsfieldCostTests(unittest.TestCase):
+    """get_cost preflight (count 1 x N) and balance; never a generation or upload."""
+
+    def setUp(self):
+        self.backend = higgsfield.HiggsfieldBackend()
+
+    def quote(self, answer, **kw):
+        args = dict(image_path=None, mask_path=None, mask_alpha_path=None, prompt="a red car",
+                    width=1168, height=880, count=3, model="gpt_image_2_5", quality="medium",
+                    resolution="1K")
+        args.update(kw)
+        client = mock.Mock()
+        client.call_tool.return_value = answer
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            q = self.backend.estimate(GenerationRequest(**args), "")
+        names = [c[0][0] for c in client.call_tool.call_args_list]
+        self.assertEqual(names, ["generate_image"])
+        return q, client.call_tool.call_args_list[0][0][1]["params"]
+
+    def test_count_one_times_n(self):
+        q, params = self.quote({"cost": {"credits": 0.5, "credits_exact": 0.5}})
+        self.assertIs(params["get_cost"], True)
+        self.assertEqual(params["count"], 1)
+        self.assertEqual(params["model"], "gpt_image_2_5")
+        self.assertEqual(params["quality"], "medium")
+        self.assertEqual(params["resolution"], "1k")
+        self.assertEqual(params["aspect_ratio"], "4:3")
+        self.assertNotIn("medias", params)
+        self.assertEqual((q.amount, q.exact), (1.5, False))
+        self.assertEqual(q.text(), u"\u2248 1.5 credits for 3")
+
+    def test_single_image_is_exact(self):
+        q, _ = self.quote({"cost": {"credits": 2}}, count=1, model="nano_banana_2_1",
+                          resolution="2K", width=2048, height=1536)
+        self.assertEqual((q.amount, q.exact, q.text()), (2, True, "2 credits"))
+
+    def test_bad_answer_raises(self):
+        with self.assertRaises(BackendError):
+            self.quote({"jobs": []})
+
+    def test_generate_params_keep_medias(self):
+        spec = self.backend.model_spec("gpt_image_2_5")
+        req = GenerationRequest(None, None, None, "x", 1024, 1024)
+        p = self.backend._params(req, spec, "x", "m1", "1:1", 3)
+        self.assertEqual(p["medias"], [{"role": "image_references", "value": "m1"}])
+
+    def test_balance(self):
+        client = mock.Mock()
+        client.call_tool.return_value = {"credits": 143.97, "subscription_plan_type": "creator"}
+        with mock.patch.object(higgsfield.HiggsfieldBackend, "quiet_client",
+                               return_value=client):
+            b = self.backend.balance("")
+        self.assertEqual(b.text(), "balance 143.97 (Creator)")
+        client.call_tool.assert_called_once_with("balance", {})
+
+
 if __name__ == "__main__":
     unittest.main()

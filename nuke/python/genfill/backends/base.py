@@ -336,6 +336,23 @@ class Backend(object):
         """Return a list of PNG bytes, one per variation."""
         raise NotImplementedError
 
+    def estimate(self, request, api_key=""):
+        """What ``generate(request)`` would cost: a :class:`pricing.Quote`, or None (unknown).
+
+        Runs on a worker thread. ``request`` has no image files (``image_path`` etc. are None);
+        width/height/count/model/quality/resolution are what Generate would send. Must never
+        submit work, spend credits or open a browser (raise :class:`oauth.LoginRequired` when a
+        sign-in is missing).
+        """
+        return None
+
+    def balance(self, api_key=""):
+        """Credits left on the account (:class:`pricing.Balance`) or None if unavailable.
+
+        Worker thread, never interactive; may raise (the panel then hides the balance).
+        """
+        return None
+
 
 # --------------------------------------------------------------------------
 # HTTP helpers
