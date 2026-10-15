@@ -23,7 +23,7 @@ import random
 import time
 
 from .base import (EDIT_EMPTY_PROMPT, EDIT_PROMPT_SUFFIX, BackendError, Cancelled, ModelSpec,
-                   check_image, download)
+                   check_image, download, tiers_from)
 from . import discovery
 from .cloud import McpBackend, collect, finish, poll, progress_step, put_bytes, ref_prompt
 from .oauth import LoginRequired
@@ -55,18 +55,27 @@ _QUALITY = ("low", "medium", "high")
 MASK_ROLE_LIVE = False
 
 
+_ALL = ("1K", "2K", "4K")
+
+
 def _spec(id, label, ratios, resolution="1k", quality=None, seed=False, note="",
-          role="image_references", mask=False, inpaint_flag=False):
+          role="image_references", mask=False, inpaint_flag=False, resolutions=None):
     """One catalogue entry.
 
     Args:
+        resolution: ``resolution`` sent for auto (None: the model takes none).
+        resolutions: Tiers sent as ``resolution`` "1k"/"2k"/"4k" (models_explore options);
+            default 1K only with a ``resolution`` parameter, else fixed size.
         quality: GenFill quality -> model value ("auto" always means the model default).
         role: Media role of the reference image (differs per model).
         mask: Send the GenFill mask as a ``mask`` media; the model becomes ``kind="inpaint"``.
         inpaint_flag: The model also takes ``is_inpaint`` (sent as true with the mask).
     """
+    if resolutions is None:
+        resolutions = ("1K",) if resolution else ()
     return ModelSpec(id, label, kind="inpaint" if mask else "edit", note=note,
-                     ratios=list(ratios), resolution=resolution, quality=quality, seed=seed,
+                     ratios=list(ratios), resolution=resolution, resolutions=tuple(resolutions),
+                     quality=quality, seed=seed,
                      media_role=role, mask=bool(mask), inpaint_flag=bool(mask and inpaint_flag))
 
 
@@ -77,32 +86,35 @@ def _masked(**kw):
 
 _CATALOGUE = (
     _spec("gpt_image_2_5", "GPT Image 2.5", _GPT, quality={q: q for q in _QUALITY},
+          resolutions=_ALL,
           note="Follows the prompt well and keeps the geometry. About 0.25 credits at low."),
-    _spec("gpt_image_2", "GPT Image 2", _GPT2, quality={q: q for q in _QUALITY}, role="image"),
+    _spec("gpt_image_2", "GPT Image 2", _GPT2, quality={q: q for q in _QUALITY}, role="image",
+          resolutions=_ALL),
     _spec("nano_banana_2_1", "Nano Banana 2.1", _WIDE, seed=True, note="About 1.5 credits.",
+          resolutions=_ALL,
           **_masked(inpaint_flag=True)),
-    _spec("nano_banana_2", "Nano Banana 2", _CLASSIC, note="About 1.5 credits.",
+    _spec("nano_banana_2", "Nano Banana 2", _CLASSIC, note="About 1.5 credits.", resolutions=_ALL,
           **_masked(inpaint_flag=True)),
     _spec("nano_banana_2_lite", "Nano Banana 2 Lite", _CLASSIC, note="About 1 credit.",
           **_masked(inpaint_flag=True)),
-    _spec("nano_banana_pro", "Nano Banana Pro", _CLASSIC),
+    _spec("nano_banana_pro", "Nano Banana Pro", _CLASSIC, resolutions=_ALL),
     _spec("nano_banana", "Nano Banana", _CLASSIC, resolution=None),
-    _spec("ideogram_4_5", "Ideogram 4.5", _IDEOGRAM, seed=True,
+    _spec("ideogram_4_5", "Ideogram 4.5", _IDEOGRAM, seed=True, resolutions=("1K", "2K"),
           quality={"low": "low", "medium": "medium", "high": "high"}, note="About 1 credit at low.",
           **_masked()),
-    _spec("seedream_v5_pro", "Seedream 5 Pro", _SEEDREAM),
-    _spec("seedream_5_0_flash", "Seedream 5 Flash", _SEEDREAM),
+    _spec("seedream_v5_pro", "Seedream 5 Pro", _SEEDREAM, resolutions=("1K", "2K")),
+    _spec("seedream_5_0_flash", "Seedream 5 Flash", _SEEDREAM, resolutions=("1K", "2K")),
     _spec("seedream_v5_lite", "Seedream 5 Lite", _SEEDREAM_LITE, resolution=None),
     _spec("seedream_v4_5", "Seedream 4.5", _SEEDREAM, resolution=None),
     _spec("flux_kontext", "FLUX Kontext", _BASIC, resolution=None),
-    _spec("flux_2", "FLUX.2", _BASIC),
-    _spec("flux_3_image", "FLUX.3", _FLUX3),
+    _spec("flux_2", "FLUX.2", _BASIC, resolutions=("1K", "2K")),
+    _spec("flux_3_image", "FLUX.3", _FLUX3, resolutions=_ALL),
     _spec("openai_hazel", "OpenAI Hazel", _HAZEL, resolution=None,
           quality={q: q for q in _QUALITY}),
     _spec("grok_image_2_0", "Grok Image 2.0", _GROK,
-          quality={"low": "low", "medium": "medium", "high": "medium"}),
-    _spec("grok_image", "Grok Image", _GROK),
-    _spec("kling_omni_image", "Kling O1 Image", _KLING),
+          quality={"low": "low", "medium": "medium", "high": "medium"}, resolutions=("1K", "2K")),
+    _spec("grok_image", "Grok Image", _GROK, resolutions=("1K", "2K")),
+    _spec("kling_omni_image", "Kling O1 Image", _KLING, resolutions=("1K", "2K")),
 )
 
 
@@ -138,10 +150,11 @@ def explore_specs(items):
         if (not role or not ratios
                 or any(str(p.get("required")) == "required" for p in params.values())):
             continue
-        resolution = discovery.smallest_resolution(
-            (params.get("resolution") or {}).get("options"))
+        options = (params.get("resolution") or {}).get("options")
+        resolution = discovery.smallest_resolution(options)
         quality = discovery.quality_map((params.get("quality") or {}).get("options"))
-        kw = dict(resolution=resolution, quality=quality, seed="seed" in params, role=role,
+        kw = dict(resolution=resolution, resolutions=tiers_from(options) if resolution else (),
+                  quality=quality, seed="seed" in params, role=role,
                   note=str(item.get("description") or "").strip()[:160])
         if "mask" in roles:
             kw = _masked(inpaint_flag="is_inpaint" in params, **kw)
@@ -189,11 +202,19 @@ class HiggsfieldBackend(McpBackend):
                 break
         return explore_specs(items)
 
-    def model_size(self, width, height, model=""):
+    def resolutions(self, model=""):
+        """Entries without a tier list (typed ids, older cached lists): 1K."""
+        spec = self.model_spec(model)
+        if spec is not None and "resolutions" not in spec.extra:
+            return ("1K",)
+        return super(HiggsfieldBackend, self).resolutions(model)
+
+    def model_size(self, width, height, model="", resolution="auto"):
         ratios = self.model_spec(model).extra.get("ratios") or _BASIC
         ratio = nearest_ratio(width, height, ratios)
         a, b = (float(x) for x in ratio.split(":"))
-        return region.scale_to_pixel_budget(a, b, 1024 * 1024, 16, min_side=256)
+        budget = self.tier_budget(width, height, model, resolution, 1024 * 1024)
+        return region.scale_to_pixel_budget(a, b, budget, 16, min_side=256)
 
     def _params(self, request, spec, prompt, media_id, ratio, seed, mask_id=None):
         medias = [{"role": spec.extra.get("media_role") or "image_references",
@@ -209,7 +230,10 @@ class HiggsfieldBackend(McpBackend):
         }
         if mask_id and spec.extra.get("inpaint_flag"):
             params["is_inpaint"] = True
-        if spec.extra.get("resolution"):
+        tier = self.request_tier(request, spec.id)
+        if spec.extra.get("resolution") and tier in (spec.extra.get("resolutions") or ()):
+            params["resolution"] = tier.lower()
+        elif spec.extra.get("resolution"):
             params["resolution"] = spec.extra["resolution"]
         quality = (spec.extra.get("quality") or {}).get((request.quality or "auto").lower())
         if quality:

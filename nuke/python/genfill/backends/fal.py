@@ -24,7 +24,7 @@ import time
 
 from . import base
 from .base import (REF_EMPTY_PROMPT, REF_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
-                   ModelSpec)
+                   ModelSpec, tiers_from)
 from .cloud import collect, finish
 from .. import pngio, region
 
@@ -63,14 +63,30 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 #   aspect_ratios (None)        ... the nearest of these when the model has an enum
 #   output_format (True)        send output_format "png"
 #   quality_field (None)        field fed from the Quality setting (low/medium/high)
-#   budget / multiple           pixel budget and grid for model_size
+#   budget / multiple           pixel budget and grid for model_size (auto resolution)
 #   fixed ({})                  constant fields merged into the body
+#   resolutions (_FILL)         tiers of the Resolution setting the model can run
+#   resolution_field (None)     field that takes the tier ("resolution", "image_size") ...
+#   resolution_values ({})      ... with these values per tier ({"2K": "2K"}); overrides fixed
+#   min_pixels / max_pixels     pixel limits of a tier size; tier_max_side: longest side
+_ALL = ("1K", "2K", "4K")
+_FILL = ("1K", "2K")     # mask models answer at the input size; 4 MP is the safe ceiling
 _MASK = dict(image_field="image_url", mask_field="mask_url", count_field="num_images",
              seed_field="seed")
 _REF = dict(image_field="image_urls", mask_as_image=True)
 _GPT_EDIT = dict(image_field="image_urls", mask_field="mask_url", count_field="num_images",
                  size="obj", quality_field="quality", budget=1536 * 1024,
-                 fixed={"quality": "high"})
+                 fixed={"quality": "high"}, resolutions=_ALL, min_pixels=655360,
+                 max_pixels=3840 * 2160, tier_max_side=3840)
+
+
+def _res(field, values):
+    """Extra keys for a model that takes the tier as ``field``: ``{"1K": "1K", ...}``."""
+    return dict(resolution_field=field, resolution_values=dict(values),
+                resolutions=tuple(t for t in _ALL if t in values))
+
+
+_NB_RES = _res("resolution", {"1K": "1K", "2K": "2K", "4K": "4K"})
 
 CATALOGUE = (
     ModelSpec("fal-ai/flux-pro/v1/fill", "FLUX.1 Fill [pro]", kind="inpaint", erase=ERASE_MODEL,
@@ -85,7 +101,8 @@ CATALOGUE = (
               fixed={"rendering_speed": "QUALITY", "expand_prompt": False}, **_MASK),
     ModelSpec("ideogram/v4.5/edit", "Ideogram 4.5 Edit", kind="inpaint", max_count=8,
               note="Newest Ideogram mask fill, good with text and graphics.",
-              output_format=False, mask_invert=True, quality_field="quality", **_MASK),
+              output_format=False, mask_invert=True, quality_field="quality",
+              max_pixels=2048 * 2048, **_MASK),
     ModelSpec("openai/gpt-image-2/edit", "GPT Image 2 (fal)", kind="inpaint", max_count=4,
               note="Strong instruction following; mask edit.", **_GPT_EDIT),
     ModelSpec("openai/gpt-image-2.5/flare/edit", "GPT Image 2.5 Flare (fal)", kind="inpaint",
@@ -111,30 +128,37 @@ CATALOGUE = (
               seed_field="seed", seed_max=999, output_format=False, fixed={"mode": "standard"}),
     ModelSpec("google/nano-banana-2.1/edit", "Nano Banana 2.1 (reference edit)", kind="edit",
               max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
-              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
+              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"},
+              **dict(_REF, **_NB_RES)),
     ModelSpec("fal-ai/nano-banana-2/edit", "Nano Banana 2 (reference edit)", kind="edit",
               max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
-              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
+              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"},
+              **dict(_REF, **_NB_RES)),
     ModelSpec("fal-ai/nano-banana-pro/edit", "Nano Banana Pro (reference edit)", kind="edit",
               max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
-              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
+              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"},
+              **dict(_REF, **_NB_RES)),
     ModelSpec("blackforestlabs/flux-3/edit-image", "FLUX.3 Edit (reference edit)", kind="edit",
               max_count=1, note="Newest BFL edit model; one image per request.",
-              fixed={"resolution": "1k", "aspect_ratio": "auto"}, **_REF),
+              fixed={"resolution": "1k", "aspect_ratio": "auto"},
+              **dict(_REF, **_res("resolution", {"1K": "1k", "2K": "2k", "4K": "4k"}))),
     ModelSpec("bytedance/seedream/v5/pro/edit", "Seedream 5 Pro Edit (reference edit)",
               kind="edit", max_count=6, note="Region-precise reference edit.",
-              count_field="num_images", fixed={"image_size": "auto_1K"}, **_REF),
+              count_field="num_images", fixed={"image_size": "auto_1K"},
+              **dict(_REF, **_res("image_size", {"1K": "auto_1K", "2K": "auto_2K"}))),
     ModelSpec("bytedance/seedream/v5/flash/edit", "Seedream 5 Flash Edit (reference edit)",
               kind="edit", max_count=6, note="Fast Seedream reference edit.",
-              count_field="num_images", fixed={"image_size": "auto_1K"}, **_REF),
+              count_field="num_images", fixed={"image_size": "auto_1K"},
+              **dict(_REF, **_res("image_size", {"1K": "auto_1K", "2K": "auto_2K"}))),
     ModelSpec("bytedance/seedream/v5/lite/edit", "Seedream 5 Lite Edit (reference edit)",
               kind="edit", max_count=6, note="Renders at 2K or more (its minimum size).",
               count_field="num_images", output_format=False,
-              fixed={"image_size": "auto_2K"}, **_REF),
+              fixed={"image_size": "auto_2K"},
+              **dict(_REF, **_res("image_size", {"2K": "auto_2K", "4K": "auto_4K"}))),
     ModelSpec("xai/grok-imagine-image/v2.0/edit", "Grok Imagine 2.0 Edit (reference edit)",
               kind="edit", max_count=4, note="xAI reference edit; no mask input.",
               count_field="num_images", fixed={"resolution": "1k", "aspect_ratio": "auto"},
-              **_REF),
+              **dict(_REF, **_res("resolution", {"1K": "1k", "2K": "2k"}))),
 )
 
 
@@ -147,6 +171,7 @@ class FalBackend(Backend):
     description = ("Many image models behind one key: mask inpainting, removal and "
                    "reference edits.")
     discoverable = True
+    default_resolutions = _FILL
 
     def discover(self, api_key=""):
         """Live catalogue from fal's public model API (no key needed; sent if set).
@@ -188,11 +213,18 @@ class FalBackend(Backend):
 
     # ------------------------------------------------------------------ sizes
 
-    def model_size(self, width, height, model=""):
+    def model_size(self, width, height, model="", resolution="auto"):
         x = self.model_spec(model).extra if self.model_spec(model) else {}
-        return region.scale_to_pixel_budget(width, height, x.get("budget", 1024 * 1024),
-                                            x.get("multiple", 16), min_side=256,
-                                            max_side=2560, max_aspect=3.0)
+        tier, _ = self.resolution_plan(model, resolution)
+        multiple = x.get("multiple", 16)
+        if tier == "auto":
+            return region.scale_to_pixel_budget(width, height, x.get("budget", 1024 * 1024),
+                                                multiple, min_side=256, max_side=2560,
+                                                max_aspect=3.0)
+        budget = self.tier_budget(width, height, model, resolution, x.get("budget", 1024 * 1024))
+        w, h = region.scale_to_pixel_budget(width, height, budget, multiple, min_side=256,
+                                            max_side=x.get("tier_max_side"), max_aspect=3.0)
+        return region.clamp_pixels(w, h, multiple, x.get("min_pixels"), x.get("max_pixels"))
 
     # --------------------------------------------------------------- generate
 
@@ -222,7 +254,8 @@ class FalBackend(Backend):
                 if progress:
                     progress(0.1 + 0.1 * i / len(plan), "Submitting request %d of %d to %s..."
                              % (i + 1, len(plan), spec.id))
-                body = build_payload(spec, request, prompt, urls, n, seed)
+                body = build_payload(spec, request, prompt, urls, n, seed,
+                                     tier=self.request_tier(request, spec.id))
                 try:
                     jobs.append(self._submit(spec.id, body, headers))
                 except Cancelled:
@@ -463,6 +496,28 @@ def _size_extra(props, schemas, masked):
     return None
 
 
+def _resolution_extra(props, extra, masked):
+    """Resolution-setting keys for a discovered model (see the catalogue key list).
+
+    A ``resolution`` enum (or ``image_size`` ``auto_2K``-style presets) carries the tier; an
+    exact size (``image_size`` object, ``width``/``height``) takes any tier; a mask model
+    answers at the input size (up to 2K); an aspect-ratio-only model has a fixed size.
+    """
+    for field in ("resolution", "image_size"):
+        values = _enum(props.get(field))
+        mapping = {}
+        for v in values:
+            tier = tiers_from([v])
+            if tier and tier[0] not in mapping and (field == "resolution"
+                                                    or v.lower().startswith("auto_")):
+                mapping[tier[0]] = v
+        if mapping:
+            return _res(field, mapping)
+    if extra.get("size") in ("obj", "wh") and not masked:
+        return {"resolutions": _ALL}
+    return {"resolutions": _FILL if masked else ()}
+
+
 def _ratios(values):
     out = []
     for v in values:
@@ -548,6 +603,7 @@ def spec_from_openapi(model):
     if fixed:
         extra["fixed"] = fixed
     extra.update(sizing)
+    extra.update(_resolution_extra(props, extra, bool(mask_field)))
     note = str(meta.get("description") or "").strip()
     return ModelSpec(eid, label, kind=kind, max_count=max_count, note=note[:160], **extra)
 
@@ -596,8 +652,11 @@ def _plan(spec, request):
     return plan
 
 
-def build_payload(spec, request, prompt, urls, n, seed):
-    """Request body for one queue call, read from the catalogue entry's ``extra``."""
+def build_payload(spec, request, prompt, urls, n, seed, tier="auto"):
+    """Request body for one queue call, read from the catalogue entry's ``extra``.
+
+    ``tier`` is the resolution tier to ask for (``auto`` keeps the catalogue's own value).
+    """
     x = spec.extra
     image = urls["image"]
     if x.get("image_field", "image_urls") == "image_urls":
@@ -635,6 +694,9 @@ def build_payload(spec, request, prompt, urls, n, seed):
     if x.get("output_format", True):
         body["output_format"] = "png"
     body.update(x.get("fixed", {}))
+    value = (x.get("resolution_values") or {}).get(tier)
+    if x.get("resolution_field") and value:
+        body[x["resolution_field"]] = value
     if x.get("quality_field") and request.quality in ("low", "medium", "high"):
         body[x["quality_field"]] = request.quality
     return body

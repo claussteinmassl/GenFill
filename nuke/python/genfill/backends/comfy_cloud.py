@@ -80,6 +80,31 @@ PARTNER_SLUGS = {
     "ideogram-v3-edit": "ideogram/generate",
 }
 
+# Resolution setting per model (unlisted: 1K only). Graph mask nodes and partner mask edits
+# answer at the input size; partner edits that render their own size take the tier as a param:
+# ``(param, {tier: value})``, or ``"size"`` for OpenAI's "WxH". Param pass-through by
+# partner_generate is documented for Grok only; Nano Banana / OpenAI are by node spec.
+_ALL = ("1K", "2K", "4K")
+RESOLUTIONS = {
+    "flux-pro-fill": ("1K", "2K"), "flux-erase": ("1K", "2K"),
+    "bria-genfill": ("1K", "2K"), "bria-eraser": ("1K", "2K"),
+    "recraft-inpaint": ("1K", "2K"), "ideogram-v3-edit": ("1K", "2K"),
+    "flux-kontext-pro": (), "flux-kontext-max": (),     # aspect_ratio only, ~1 MP
+    "nano-banana-2": _ALL, "nano-banana-pro": _ALL,
+    "qwen-image-3": ("1K", "2K"),                       # edit output matches the input
+    "grok-image-edit": ("1K", "2K"),
+    "gpt-image-2.5-flare": _ALL, "gpt-image-2.5-sunburst": _ALL,
+}
+PARTNER_RESOLUTION = {
+    "nano-banana-2": ("resolution", {"1K": "1K", "2K": "2K", "4K": "4K"}),
+    "nano-banana-pro": ("resolution", {"1K": "1K", "2K": "2K", "4K": "4K"}),
+    "grok-image-edit": ("resolution", {"1K": "1k", "2K": "2k"}),
+    "gpt-image-2.5-flare": "size",
+    "gpt-image-2.5-sunburst": "size",
+}
+# OpenAI gpt-image-2+ pixel limits (also through Comfy Cloud's direct OpenAI path).
+_OPENAI_LIMITS = dict(min_pixels=655360, max_pixels=3840 * 2160, tier_max_side=3840)
+
 # Fixed ``partner_generate`` params per model (the variant of a multi-model slug). A mask edit on
 # openai/images-generations sends no default model, so the variant must always be named.
 PARTNER_PARAMS = {
@@ -245,14 +270,44 @@ class ComfyCloudBackend(McpBackend):
                   note="Ideogram V3 mask edit, good with text."),
     )
 
-    def model_size(self, width, height, model=""):
+    def resolutions(self, model=""):
+        spec = self.model_spec(model)
+        return RESOLUTIONS.get(spec.id, ("1K",)) if spec is not None else ("1K",)
+
+    def pixel_limits(self, model=""):
+        spec = self.model_spec(model)
+        if spec is not None and PARTNER_RESOLUTION.get(spec.id) == "size":
+            return _OPENAI_LIMITS["min_pixels"], _OPENAI_LIMITS["max_pixels"]
+        return None, None
+
+    def model_size(self, width, height, model="", resolution="auto"):
         spec = self.model_spec(model)
         if spec.kind == "edit" and "kontext" in (PARTNER_SLUGS.get(spec.id) or spec.id):
             # Kontext takes an aspect_ratio from ASPECTS: send the plate in exactly that shape.
             return _snapped(width, height)[:2]
         multiple = 32 if spec.kind != "edit" else 16
-        return region.scale_to_pixel_budget(width, height, 1024 * 1024, multiple,
-                                            min_side=256, max_aspect=3.0)
+        tier, _ = self.resolution_plan(model, resolution)
+        if tier != "auto" and PARTNER_RESOLUTION.get(spec.id) == "size":
+            multiple = 16       # OpenAI sizes: sides on a 16 px grid
+        budget = self.tier_budget(width, height, model, resolution, 1024 * 1024)
+        max_side = _OPENAI_LIMITS["tier_max_side"] if (
+            tier != "auto" and PARTNER_RESOLUTION.get(spec.id) == "size") else None
+        w, h = region.scale_to_pixel_budget(width, height, budget, multiple,
+                                            min_side=256, max_side=max_side, max_aspect=3.0)
+        if tier == "auto":
+            return w, h
+        return region.clamp_pixels(w, h, multiple, *self.pixel_limits(model))
+
+    def _resolution_params(self, spec, request):
+        """``partner_generate`` params that carry the resolution tier (auto: none)."""
+        tier = self.request_tier(request, spec.id)
+        how = PARTNER_RESOLUTION.get(spec.id)
+        if tier == "auto" or not how:
+            return {}
+        if how == "size":
+            return {"size": "%dx%d" % (request.width, request.height)}
+        field, values = how
+        return {field: values[tier]} if tier in values else {}
 
     # ---- generation ---------------------------------------------------------
     def generate(self, request, api_key, progress=None, cancelled=None):
@@ -395,6 +450,7 @@ class ComfyCloudBackend(McpBackend):
                     "medias": [dict(m) for m in medias],
                     "confirm": True, "wait_for_output": True}
             params = dict(PARTNER_PARAMS.get(spec.id) or {})
+            params.update(self._resolution_params(spec, request))
             if "kontext" in slug:
                 params["aspect_ratio"] = _closest_aspect(request.width, request.height)
             if params:

@@ -3,7 +3,7 @@
 Usage (from the repository root):
 
     python installers/live_check.py <backend id> [model] [--prompt "..."] [--count N] [--out DIR]
-                                    [--workflows DIR]
+                                    [--workflows DIR] [--resolution auto|1K|2K|4K]
 
 It builds a 640x480 test crop (sky, ground, a red ball) and a mask over the ball, calls the
 backend exactly like GenFill does, and writes the results plus a report to ``--out``
@@ -13,6 +13,9 @@ time. This spends real credits (except ComfyUI on your own machine).
 ComfyUI: the model is a workflow id, e.g. ``comfyui sdxl_inpaint --workflows tests/fixtures/comfyui``.
 ``--workflows DIR`` adds a workflow folder (sets ``GENFILL_COMFY_WORKFLOWS``); the server comes
 from ``GENFILL_COMFY_URL`` or the config (default http://127.0.0.1:8188).
+
+``--resolution 2K`` checks a processing tier: the synthetic plate region is then made as large
+as the tier (4:3), so the model gets the tier's size (or its own maximum) instead of 640x480.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "nuke", "python"))
 
-from genfill import backends, config, pngio  # noqa: E402
+from genfill import backends, config, pngio, region  # noqa: E402
 from genfill.backends import base  # noqa: E402
 
 W, H = 640, 480
@@ -68,6 +71,8 @@ def main(argv=None):
     ap.add_argument("--out", default="")
     ap.add_argument("--workflows", default="",
                     help="extra ComfyUI workflow folder (sets GENFILL_COMFY_WORKFLOWS)")
+    ap.add_argument("--resolution", default="auto", choices=list(base.RESOLUTIONS),
+                    help="processing resolution (the Resolution setting); default auto")
     args = ap.parse_args(argv)
     if args.workflows:
         # config.comfyui_workflow_dirs() reads the variable on every call, so setting it here
@@ -78,15 +83,19 @@ def main(argv=None):
     out = args.out or os.path.join(HERE, "..", "test_output", "live_%s" % backend.id)
     if not os.path.isdir(out):
         os.makedirs(out)
-    mw, mh = backend.model_size(W, H, args.model)
+    rw, rh = W, H
+    if args.resolution != "auto":    # a plate region as large as the tier (4:3)
+        rw, rh = region.scale_to_pixel_budget(4, 3, base.TIER_PIXELS[args.resolution], 16)
+    plan = backend.size_plan(rw, rh, args.model, args.resolution)
+    mw, mh = plan.width, plan.height
     paths = make_inputs(out, mw, mh)
     req = base.GenerationRequest(paths["source"], paths["mask"], paths["mask_alpha"],
                                  args.prompt, mw, mh, seed=args.seed, count=args.count,
-                                 model=args.model)
+                                 model=args.model, resolution=args.resolution)
     key = config.get_api_key(backend.id, backend.env_var)
-    print("%s model=%r size=%dx%d prompt=%r count=%d key=%s" % (
-        backend.id, args.model or backend.default_model, mw, mh, args.prompt, args.count,
-        "yes" if key else "no"))
+    print("%s model=%r size=%dx%d (resolution %s: %s) prompt=%r count=%d key=%s" % (
+        backend.id, args.model or backend.default_model, mw, mh, args.resolution, plan.text(),
+        args.prompt, args.count, "yes" if key else "no"))
 
     def progress(frac, msg):
         print("  %3.0f%% %s" % (frac * 100, msg))

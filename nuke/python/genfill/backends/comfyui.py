@@ -228,11 +228,19 @@ class ComfyUIBackend(Backend):
             raise BackendError("ComfyUI workflow %r is not usable: %s" % (wid, wf.error))
         return wf
 
-    def model_size(self, width, height, model=""):
+    def resolutions(self, model=""):
         try:
-            return self.workflow(model).model_size(width, height)
+            return self.workflow(model).resolutions()
         except BackendError:
-            return region.scale_to_pixel_budget(width, height, 1024 * 1024, 64, min_side=512,
+            return ("1K", "2K")     # fallback size below: max_side 2048
+
+    def model_size(self, width, height, model="", resolution="auto"):
+        tier, _ = self.resolution_plan(model, resolution)
+        try:
+            return self.workflow(model).model_size(width, height, tier)
+        except BackendError:
+            budget = self.tier_budget(width, height, model, resolution, 1024 * 1024)
+            return region.scale_to_pixel_budget(width, height, budget, 64, min_side=512,
                                                 max_side=2048, max_aspect=3.0)
 
     # ---- generation ---------------------------------------------------------

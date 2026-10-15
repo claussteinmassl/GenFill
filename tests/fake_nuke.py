@@ -71,6 +71,9 @@ class Knob(object):
     def setFlag(self, f):
         self.flags |= f
 
+    def clearFlag(self, f):
+        self.flags &= ~f
+
     def setTooltip(self, t):
         pass
 

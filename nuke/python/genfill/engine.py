@@ -359,6 +359,32 @@ def _execute(node, write_name, path, frame):
         raise UserError("Nuke did not write %s" % path)
 
 
+def resolution(node):
+    """The node's processing resolution (``auto``, ``1K``, ``2K``, ``4K``)."""
+    if "gf_resolution" not in node.knobs():
+        return "auto"
+    return backends.base.normalize_resolution(node["gf_resolution"].value())
+
+
+def size_plan(node, backend=None):
+    """What Generate would send, for the panel: :class:`backends.base.SizePlan` or None.
+
+    Main thread. Uses the region of the newest generation (the last selection GenFill saw),
+    else the plate format.
+    """
+    backend = backend or gfnode.backend_for(node)
+    st = get_state(node)
+    if st["generations"]:
+        _x, _y, w, h = st["generations"][-1]["region"]
+    else:
+        src = node.input(0)
+        if src is None:
+            return None
+        fmt = src.format()
+        w, h = fmt.width(), fmt.height()
+    return backend.size_plan(w, h, node["gf_model"].value().strip(), resolution(node))
+
+
 def _prepare(node, backend, frame, job_dir):
     """Render probe + crops. Returns (region, model_w, model_h, files dict)."""
     src_input = node.input(0)
@@ -396,13 +422,15 @@ def _prepare(node, backend, frame, job_dir):
     context = node["gf_context"].value()
     min_size = int(node["gf_min_size"].value())
     model = node["gf_model"].value().strip()
+    res = resolution(node)
     rough = region.expand_region(box, fw, fh, context=context, min_size=min_size)
-    mw, mh = backend.model_size(rough.w, rough.h, model)
+    plan = backend.size_plan(rough.w, rough.h, model, res)
+    mw, mh = plan.width, plan.height
     reg = region.expand_region(box, fw, fh, context=context, min_size=min_size,
                                aspect=float(mw) / mh)
 
-    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s)", reg.x, reg.y, reg.w, reg.h,
-               mw, mh, backend.id)
+    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s, resolution %s: %s)",
+               reg.x, reg.y, reg.w, reg.h, mw, mh, backend.id, res, plan.text())
 
     # 3. crops
     for crop_name, ref_name in ((gfnode.CROP_SRC, gfnode.REFORMAT_SRC),
@@ -558,7 +586,8 @@ def generate(node, prompt=None, blocking=False):
         image_path=files["image"], mask_path=files["mask"],
         mask_alpha_path=files["mask_alpha"], prompt=prompt, width=mw, height=mh,
         seed=seed, count=count, negative_prompt=node["gf_negative"].value(),
-        model=node["gf_model"].value().strip(), quality=node["gf_quality"].value())
+        model=node["gf_model"].value().strip(), quality=node["gf_quality"].value(),
+        resolution=resolution(node))
     request.transfer = files["transfer"]
     meta = {
         "id": gen_id,
@@ -573,6 +602,7 @@ def generate(node, prompt=None, blocking=False):
         "format": list(fmt),
         "region": [reg.x, reg.y, reg.w, reg.h],
         "model_size": [mw, mh],
+        "resolution": request.resolution,
         "abs_dir": job_dir,
         "transfer": files["transfer"],
         "created": datetime.datetime.now().isoformat(timespec="seconds"),

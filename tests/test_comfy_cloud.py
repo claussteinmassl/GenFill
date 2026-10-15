@@ -208,6 +208,33 @@ class TestGenerate(Env):
         self.assertNotIn("params", a)
         self.assertEqual(len(self.called("upload_file")), 1)
 
+    def test_resolution_tiers(self):
+        b = self.b
+        self.assertEqual(b.size_plan(5000, 2800, "flux-pro-fill", "4K").note, "model max 2K")
+        w, h = b.model_size(5000, 2800, "flux-pro-fill", "2K")
+        self.assertEqual((w % 32, h % 32), (0, 0))
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.03)
+        self.assertEqual(b.size_plan(5000, 2800, "flux-kontext-pro", "2K").note, "fixed size")
+        self.assertEqual(b.size_plan(5000, 2800, "flux-2-pro", "2K").note, "model max 1K")
+        for model, res, want in (("nano-banana-2", "4K", {"resolution": "4K"}),
+                                 ("nano-banana-pro", "2K", {"resolution": "2K"}),
+                                 ("nano-banana-pro", "auto", None),
+                                 ("grok-image-edit", "4K", {"resolution": "2k",
+                                                            "model": "grok-imagine-image-2.0"}),
+                                 ("qwen-image-3", "2K", None)):       # output matches input
+            self.client.calls[:] = []
+            w, h = b.model_size(5000, 2800, model, res)
+            b.generate(self.req(model=model, count=1, width=w, height=h, resolution=res), "k")
+            a = self.called("partner_generate")[0]
+            self.assertEqual(a.get("params"), want, (model, res))
+        self.client.calls[:] = []
+        w, h = b.model_size(8000, 4500, "gpt-image-2.5-flare", "4K")
+        self.assertEqual((w, h), (3840, 2160))
+        b.generate(self.req(model="gpt-image-2.5-flare", count=1, width=w, height=h,
+                            resolution="4K"), "k")
+        self.assertEqual(self.called("partner_generate")[0]["params"],
+                         {"model": "gpt-image-2.5-flare", "size": "3840x2160"})
+
     def test_partner_in_progress_falls_back_to_wait(self):
         self.tools["partner_generate"] = {"prompt_id": "q", "status": "in_progress",
                                           "timed_out": True}

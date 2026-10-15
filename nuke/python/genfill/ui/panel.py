@@ -80,8 +80,40 @@ class NukeController(object):
     def signature(self):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
-                n["gf_model"].value(),
+                n["gf_model"].value(), self.quality(), self.resolution(),
                 tuple(sorted(self._engine.status(n).items())))
+
+    def _choice(self, name, default):
+        knobs = self.node.knobs()
+        return knobs[name].value() if name in knobs else default
+
+    def _set_choice(self, name, value):
+        knobs = self.node.knobs()
+        if name in knobs and value != knobs[name].value():
+            knobs[name].setValue(value)
+
+    def quality_modes(self):
+        return list(self._gfnode.QUALITY_MODES)
+
+    def quality(self):
+        return self._choice("gf_quality", "auto")
+
+    def set_quality(self, value):
+        self._set_choice("gf_quality", value)
+
+    def resolution_modes(self):
+        return list(self._gfnode.RESOLUTION_MODES)
+
+    def resolution(self):
+        return self._choice("gf_resolution", "auto")
+
+    def set_resolution(self, value):
+        self._set_choice("gf_resolution", value)
+
+    def size_text(self):
+        """``"sends 2048 x 1152 (2K)"`` for the current model and setting, or ""."""
+        plan = self._engine.size_plan(self.node)
+        return plan.text() if plan is not None else ""
 
     def prompt(self):
         return self.node["gf_prompt"].value()
@@ -407,6 +439,30 @@ class GenFillPanel(QtWidgets.QWidget):
         head.addWidget(self.version)
         root.addLayout(head)
 
+        # Quality and processing resolution (controllers without them hide the row)
+        self.options = QtWidgets.QWidget()
+        opts = QtWidgets.QHBoxLayout(self.options)
+        opts.setContentsMargins(0, 0, 0, 0)
+        opts.setSpacing(6)
+        self.quality = self._option_combo(
+            opts, "Quality", getattr(self.ctl, "quality_modes", lambda: [])(),
+            "Passed to models that offer it (GPT Image, Ideogram, ...); auto = model default.",
+            self._on_quality)
+        self.resolution = self._option_combo(
+            opts, "Resolution", getattr(self.ctl, "resolution_modes", lambda: [])(),
+            "Processing resolution: the size the crop is sent to the model at.\n"
+            "auto: each model's usual size (about 1 megapixel).\n"
+            "1K / 2K / 4K: about 1, 4 or 16 megapixels in the crop's aspect, never more "
+            "pixels than the crop has. Higher costs more.", self._on_resolution)
+        self.size_info = QtWidgets.QLabel("")
+        self.size_info.setObjectName("gfMuted")
+        self.size_info.setWordWrap(True)
+        self.size_info.setToolTip("Size the next Generate sends to the model (estimated from "
+                                  "the last selection, or the plate before the first one).")
+        opts.addWidget(self.size_info, 1)
+        self.options.setVisible(hasattr(self.ctl, "resolution"))
+        root.addWidget(self.options)
+
         # Contextual task bar
         bar = QtWidgets.QFrame()
         bar.setObjectName("gfBar")
@@ -518,7 +574,31 @@ class GenFillPanel(QtWidgets.QWidget):
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.setMinimumWidth(3 * (THUMB_W + 12))
 
+    def _option_combo(self, layout, label, items, tip, slot):
+        lbl = QtWidgets.QLabel(label)
+        lbl.setObjectName("gfMuted")
+        layout.addWidget(lbl)
+        combo = QtWidgets.QComboBox()
+        combo.setObjectName("gfOption")
+        combo.addItems(items)
+        combo.setToolTip(tip)
+        combo.currentTextChanged.connect(slot)
+        layout.addWidget(combo)
+        return combo
+
     # events -----------------------------------------------------------------
+    @_safe
+    def _on_quality(self, value):
+        if value:
+            self.ctl.set_quality(value)
+            self._sync(force=True)
+
+    @_safe
+    def _on_resolution(self, value):
+        if value:
+            self.ctl.set_resolution(value)
+            self._sync(force=True)
+
     @_safe
     def _on_model(self, label):
         if label and label != self.ctl.backend_label():
@@ -714,6 +794,7 @@ class GenFillPanel(QtWidgets.QWidget):
             self.model.blockSignals(False)
         self.model.setToolTip(self.ctl.backend_description())
         self._fill_version()
+        self._sync_options()
 
         # prompt (don't fight the user while typing)
         if not self.prompt.hasFocus() and self.prompt.text() != self.ctl.prompt():
@@ -763,6 +844,27 @@ class GenFillPanel(QtWidgets.QWidget):
         else:
             self.footer.setText("")
         self.footer.setVisible(idx >= 0)
+
+    def _sync_options(self):
+        """Quality / Resolution combos from the node, plus the size the model gets."""
+        if not hasattr(self.ctl, "resolution"):
+            return
+        for combo, value in ((self.quality, self.ctl.quality()),
+                             (self.resolution, self.ctl.resolution())):
+            if combo.currentText() != value:
+                combo.blockSignals(True)
+                combo.setCurrentText(value)
+                combo.blockSignals(False)
+        try:
+            text = self.ctl.size_text()
+        except Exception as exc:   # never break the panel over an estimate
+            text = ""
+            try:
+                from .. import log as gflog
+                gflog.warning("size estimate failed: %s", exc)
+            except Exception:
+                pass
+        self.size_info.setText(text)
 
     def _rebuild_grid(self, thumbs):
         while self.grid.count():

@@ -235,6 +235,55 @@ class MagnificTests(unittest.TestCase):
             self.assertEqual(args.get("quality"), sent, (model, quality))
         self.assertEqual(args["resolution"], "1k")
 
+    def test_resolution_tiers(self):
+        """The Resolution setting: sizes, the ``resolution`` argument and clamps."""
+        b = self.backend
+        w, h = b.model_size(4000, 2250, "gpt-2", "2K")          # custom size: the tier
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.02)
+        w, h = b.model_size(4000, 2250, "flux-2", "2K")         # snapped ratio at the tier
+        self.assertAlmostEqual(w / float(h), 16 / 9.0, delta=0.01)
+        self.assertGreater(w * h, 4000000)
+        plan = b.size_plan(4000, 2250, "flux-2", "4K")
+        self.assertEqual(plan.note, "model max 2K")
+        self.assertIn("model max 2K", plan.text())
+        self.assertEqual(b.size_plan(4000, 2250, "flux-kontext", "2K").note, "model max 1K")
+        self.assertEqual(b.size_plan(4000, 2250, "retouch-imagen-nano-banana-2", "1K").note,
+                         "model min 2K")
+        self.assertEqual(b.model_size(900, 700, "retouch-auto", "4K"), (896, 704))   # crop size
+        tools = upload_tools({
+            "images_generate": lambda a: {"creations": [{"identifier": "G1"}]},
+            "images_retouch": lambda a: {"creation": {"identifier": "R1"}},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        for model, res, tool, sent in (
+                ("gpt-2", "2K", "images_generate", "2k"),
+                ("gpt-2", "4K", "images_generate", "4k"),
+                ("gpt-2", "auto", "images_generate", "1k"),
+                ("flux-2", "4K", "images_generate", "2k"),          # clamped to the max
+                ("flux-kontext", "2K", "images_generate", None),    # fixed size: no argument
+                ("seedream-4-5", "4K", "images_generate", "4k"),
+                ("retouch-imagen-nano-banana-2-flash", "4K", "images_retouch", "4k"),
+                ("retouch-imagen-nano-banana-2", "1K", "images_retouch", "2k"),
+                ("retouch-auto", "4K", "images_retouch", None)):   # no resolution parameter
+            w, h = b.model_size(5000, 2800, model, res)
+            client, _ = self.run_with(tools, self.request(model=model, count=1, width=w,
+                                                          height=h, resolution=res))
+            args = client.named(tool)[0]
+            self.assertEqual(args.get("resolution"), sent, (model, res))
+            if model == "gpt-2" and res == "2K":
+                self.assertEqual((args["width"], args["height"]), (w, h))
+        # A crop smaller than the tier asks for the tier that holds it.
+        client, _ = self.run_with(tools, self.request(model="gpt-2", count=1, width=1024,
+                                                      height=768, resolution="4K"))
+        self.assertEqual(client.named("images_generate")[0]["resolution"], "1k")
+
+    def test_discovered_resolution_tiers(self):
+        specs = magnific.edit_specs({"models": [
+            {"slug": "x", "name": "X", "supportsReferences": True, "referenceTypes": ["image"],
+             "resolutions": ["1.5k", "2k", "3k", "4k"]}]})
+        self.assertEqual(specs[0].extra["resolutions"], ("2K", "4K"))
+        self.assertEqual(specs[0].extra["resolution"], "1.5k")
+
     def test_edit_per_model_aspect_ratios(self):
         tools = upload_tools({
             "images_generate": lambda a: {"creations": [{"identifier": "G1"}]},

@@ -42,6 +42,11 @@ QComboBox#gfModel {{ background: #1f1f1f; color: {text}; border: 1px solid {bar_
 QComboBox#gfModel:hover {{ border-color: #5a5a5a; }}
 QComboBox#gfModel QAbstractItemView {{ background: #2b2b2b; color: {text};
                                       selection-background-color: {accent}; }}
+QComboBox#gfOption {{ background: #1f1f1f; color: {text}; border: 1px solid {bar_border};
+                     border-radius: 6px; padding: 2px 6px; font-size: 11px; min-height: 18px; }}
+QComboBox#gfOption:hover {{ border-color: #5a5a5a; }}
+QComboBox#gfOption QAbstractItemView {{ background: #2b2b2b; color: {text};
+                                       selection-background-color: {accent}; }}
 QProgressBar#gfProgress {{ background: #3a3a3a; border: none; border-radius: 2px; max-height: 4px; }}
 QProgressBar#gfProgress::chunk {{ background: {accent}; border-radius: 2px; }}
 QScrollArea#gfScroll {{ background: transparent; border: none; }}

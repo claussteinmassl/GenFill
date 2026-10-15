@@ -90,6 +90,66 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(g["gf_output"].value(), "Layer")
         self.assertFalse(gfnode.ensure_current(g))      # idempotent
 
+    def test_old_nodes_get_the_resolution_knob(self):
+        g = self.g
+        self.assertEqual(g["gf_resolution"].values(), ["auto", "1K", "2K", "4K"])
+        del g._knobs["gf_resolution"]
+        self.assertEqual(engine.resolution(g), "auto")
+        self.assertTrue(gfnode.ensure_current(g))
+        self.assertEqual(g["gf_resolution"].value(), "auto")
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_generate_at_2k(self):
+        """The Resolution knob reaches the backend: tier size, request and state."""
+        from unittest import mock
+        from genfill.backends import base
+        g = self.g
+        g["gf_resolution"].setValue("2K")
+        g["gf_variations"].setValue(1)
+        seen = []
+        mock_backend = gfnode.backend_for(g)
+        real = mock_backend.generate
+        # Small stand-in tiers keep the pure-Python fake renders fast; the plumbing is the same.
+        tiers = {"1K": 64 * 64, "2K": 128 * 128, "4K": 256 * 256}
+        def spy(self, req, *a, **k):
+            seen.append(req)
+            return real(req, *a, **k)
+
+        with mock.patch.dict(base.TIER_PIXELS, tiers), \
+                mock.patch.object(type(mock_backend), "generate", spy):
+            self.assertTrue(engine.generate(g, "a crate", blocking=True), engine.status(g))
+            plan = engine.size_plan(g)
+        gen = engine.get_state(g)["generations"][0]
+        mw, mh = gen["model_size"]
+        self.assertAlmostEqual(mw * mh / float(tiers["2K"]), 1.0, delta=0.15)
+        self.assertEqual(gen["resolution"], "2K")
+        self.assertEqual((seen[0].resolution, seen[0].width, seen[0].height), ("2K", mw, mh))
+        self.assertEqual((plan.width, plan.height, plan.tier), (mw, mh, "2K"))
+        self.assertIn("(2K)", plan.text())
+        src = pngio.read(fake_nuke.EXECUTED[1][1])
+        self.assertEqual((src.width, src.height), (mw, mh))
+
+    def test_2k_never_upscales_a_small_region(self):
+        g = self.g
+        g["gf_resolution"].setValue("2K")
+        g["gf_variations"].setValue(1)
+        self.assertTrue(engine.generate(g, "a crate", blocking=True), engine.status(g))
+        gen = engine.get_state(g)["generations"][0]
+        _x, _y, w, h = gen["region"]
+        mw, mh = gen["model_size"]
+        self.assertLess(w * h, 2048 * 2048)
+        self.assertLessEqual(abs(mw - w), 8)          # the crop's own size, on the 8 px grid
+        self.assertLessEqual(abs(mh - h), 8)
+        self.assertIn("crop is smaller than 2K", engine.size_plan(g).text())
+
+    def test_size_plan_before_the_first_generation_uses_the_plate(self):
+        g = self.g
+        g["gf_resolution"].setValue("1K")
+        plan = engine.size_plan(g)
+        self.assertAlmostEqual(plan.width * plan.height / 1048576.0, 1.0, delta=0.03)
+        g["gf_resolution"].setValue("auto")
+        self.assertIn("(auto)", engine.size_plan(g).text())
+
     def test_empty_shapes_explains_what_to_do(self):
         g = self.g
         g.node(gfnode.ROTO)["curves"].rootLayer[:] = []

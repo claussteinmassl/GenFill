@@ -92,6 +92,12 @@ OUTPUT_TOOLTIP = ("Comp: the fill blended over Source through the expanded, feat
                   "Like a Photoshop generative layer with its mask.\n"
                   "Bypass: Source untouched.")
 QUALITY_MODES = ["auto", "low", "medium", "high"]
+RESOLUTION_MODES = ["auto", "1K", "2K", "4K"]
+RESOLUTION_TOOLTIP = ("Processing resolution: the size the crop is sent to the model at.\n"
+                      "auto: each model's usual size (about 1 megapixel).\n"
+                      "1K / 2K / 4K: about 1, 4 or 16 megapixels in the crop's aspect. Never "
+                      "more pixels than the crop has in the plate; models that can't go that "
+                      "high use their largest size (the panel says so). Higher costs more.")
 
 PANEL_EXPR = '__import__("genfill.ui.panel", fromlist=["GenFillPanel"]).GenFillPanel()'
 
@@ -477,6 +483,15 @@ def _add_color_knob(group, before_transfer=True):
     return k
 
 
+def _add_resolution_knob(group, startline=True):
+    k = nuke.Enumeration_Knob("gf_resolution", "resolution", RESOLUTION_MODES)
+    k.setTooltip(RESOLUTION_TOOLTIP)
+    if not startline:
+        k.clearFlag(nuke.STARTLINE)
+    group.addKnob(k)
+    return k
+
+
 def _add_display_knob(group):
     k = nuke.String_Knob("gf_display", "display colorspace", "auto")
     k.setTooltip("Display colorspace for the Display transform mode, e.g. 'Output - Rec.709'. "
@@ -524,6 +539,9 @@ def ensure_current(group):
         changed = True
     if "gf_display" not in group.knobs():
         _add_display_knob(group)
+        changed = True
+    if "gf_resolution" not in group.knobs():
+        _add_resolution_knob(group)    # appended (old nodes): defaults to auto
         changed = True
     if group.node(ROTO) is None and group.node(SEL_SWITCH) is not None \
             and group.node(SRC_IN) is not None:
@@ -650,6 +668,7 @@ def _add_knobs(group):
     k = nuke.Enumeration_Knob("gf_quality", "quality", QUALITY_MODES)
     k.setTooltip("Passed to backends that support it (OpenAI).")
     group.addKnob(k)
+    _add_resolution_knob(group, startline=False)
     k = nuke.Int_Knob("gf_variations", "variations")
     k.setValue(3)
     k.setTooltip("Variations per Generate click. Photoshop gives 3.")

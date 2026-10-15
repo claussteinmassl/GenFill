@@ -52,6 +52,19 @@ class LoadTests(unittest.TestCase):
         self.assertEqual((w % 16, h % 16), (0, 0))
         self.assertLessEqual(w * h, 262144 * 1.05)
 
+    def test_resolution_tiers_scale_pixels_up_to_max_side(self):
+        write(self.tmp, "fill", GRAPH, {"pixels": 1048576, "multiple": 16, "max_side": 2048})
+        write(self.tmp, "big", GRAPH, {"pixels": 1048576, "multiple": 16, "max_side": 4096})
+        lib = cw.load_dir(self.tmp)
+        wf = lib["fill"]
+        self.assertEqual(wf.resolutions(), ("1K", "2K"))
+        self.assertEqual(lib["big"].resolutions(), ("1K", "2K", "4K"))
+        self.assertEqual(wf.model_size(4000, 2250, "auto"), wf.model_size(4000, 2250))
+        self.assertEqual(wf.model_size(4000, 2250, "2K"), (2048, 1152))   # capped at max_side
+        self.assertEqual(lib["big"].model_size(8000, 8000, "4K"), (4096, 4096))
+        self.assertEqual(wf.model_size(900, 500, "2K"), (896, 512))       # crop size
+        self.assertEqual(wf.spec().extra["resolutions"], ("1K", "2K"))
+
     def test_invalid_workflows_are_listed_with_an_error(self):
         g = dict(GRAPH)
         del g["2"]

@@ -82,3 +82,7 @@ python installers/live_check.py comfyui sdxl_inpaint --workflows tests/fixtures/
 ```
 
 An empty `--prompt ""` runs the erase partner (`sdxl_erase`). Cloud backends spend real credits.
+
+`--resolution 1K|2K|4K` checks a processing resolution: the synthetic crop is made as large as
+the tier, and the line printed first shows the size sent ("sends 2048 x 1536 (2K)" or the
+model's maximum).

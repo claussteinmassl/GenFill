@@ -115,6 +115,35 @@ class HiggsfieldTests(unittest.TestCase):
         self.assertEqual([r["params"]["seed"] for r in reqs], [7, 8])
         self.assertNotIn("quality", reqs[0]["params"])
 
+    def test_resolution_tiers(self):
+        b = self.backend
+        w, h = b.model_size(5000, 2800, "gpt_image_2_5", "2K")
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.03)
+        self.assertEqual(b.size_plan(5000, 2800, "kling_omni_image", "4K").note, "model max 2K")
+        self.assertEqual(b.size_plan(5000, 2800, "nano_banana", "2K").note, "fixed size")
+        self.assertEqual(b.model_size(5000, 2800, "nano_banana", "2K"),
+                         b.model_size(5000, 2800, "nano_banana"))
+        for model, res, sent in (("gpt_image_2_5", "2K", "2k"), ("gpt_image_2_5", "4K", "4k"),
+                                 ("gpt_image_2_5", "auto", "1k"),
+                                 ("kling_omni_image", "4K", "2k"),
+                                 ("nano_banana_2_lite", "4K", "1k"),
+                                 ("nano_banana", "4K", None)):
+            w, h = b.model_size(5000, 2800, model, res)
+            client = FakeClient([done("completed")])
+            self.run_generate(client, self.request(model=model, count=1, width=w, height=h,
+                                                   resolution=res))
+            p = client.named("generate_image_batch")[0]["requests"][0]["params"]
+            self.assertEqual(p.get("resolution"), sent, (model, res))
+
+    def test_discovered_resolution_tiers(self):
+        specs = higgsfield.explore_specs([{
+            "id": "x_model", "name": "X", "provider_name": "P", "description": "d",
+            "aspect_ratios": ["1:1", "16:9"],
+            "medias": [{"type": "image", "roles": ["image_references"]}],
+            "parameters": [{"name": "resolution", "options": ["1k", "1.5k", "2k"]}]}])
+        self.assertEqual(specs[0].extra["resolutions"], ("1K", "2K"))
+        self.assertEqual(specs[0].extra["resolution"], "1k")
+
     def test_wait_loop_until_terminal(self):
         pending = {"jobs": [], "all_terminal": False, "poll_after_seconds": 1,
                    "summary": {"completed": 0, "failed": 0}}

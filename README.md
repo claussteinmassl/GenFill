@@ -225,6 +225,7 @@ Source ── GenerativeFill ── output
 |---|---|
 | Prompt bar + **Generate** | What to generate. Empty = remove. Enter generates |
 | Model menu | Backend picker (ComfyUI, cloud providers) |
+| Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
 | Variations | Thumbnails of every generation; ‹ › to browse; right-click for reuse prompt / reveal / delete |
 | **selection from** | *Shapes (built-in Roto)* (default), *Mask input*, or *Source alpha* |
 | **✏ Draw Selection** | Switches to Shapes and makes sure the Roto tools are in the Viewer |
@@ -239,6 +240,7 @@ Source ── GenerativeFill ── output
 |---|---|
 | model / model version | Backend, and the model of a cloud backend: pick from the version menu next to *Model* (empty = default) or type any id the provider accepts (e.g. `gpt-image-1.5`) |
 | quality | Speed vs quality (OpenAI: quality level; ComfyUI workflows ignore it) |
+| **resolution** | Processing resolution: the size the crop is sent to the model at. *auto* (default) = each model's usual size (about 1 megapixel). *1K / 2K / 4K* = about 1, 4 or 16 megapixels in the crop's aspect. Never more pixels than the crop has in the plate (a smaller crop goes at its own size). A model that can't go that high runs at its largest size and the panel says so ("model max 2K"); fixed-size models (Stability, Kontext, ...) ignore it. Providers with a resolution option get the matching value. Higher costs more |
 | variations | Variations per click (default 3, like Photoshop) |
 | seed | 0 = new random seed each click |
 | negative prompt | Things to avoid (Stability, and ComfyUI workflows with a `GenFill Negative` node) |
@@ -254,7 +256,10 @@ Source ── GenerativeFill ── output
 
 1. The selection is probed at low resolution to find its bounds (works for any matte).
 2. A **context crop** is chosen like Photoshop does: the selection plus a band of surroundings,
-   at an aspect ratio and resolution the model likes, so nothing gets stretched.
+   at an aspect ratio the model likes, so nothing gets stretched. Its size comes from
+   **resolution**: *auto* uses the model's usual size (about 1 megapixel), *1K / 2K / 4K* about
+   1, 4 or 16 megapixels, capped at the crop's own pixel count and at the model's maximum. Nuke
+   resizes the crop to that size on the way out and the result back to the crop on the way in.
 3. The crop is **encoded** for the model (next section) and written as an 8-bit PNG, together
    with the mask.
 4. The model generates N variations. With ComfyUI, GenFill uploads the crop, queues one graph

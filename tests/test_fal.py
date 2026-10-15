@@ -115,10 +115,11 @@ class FalTests(unittest.TestCase):
             return fh.read()
 
     def run_fal(self, fake, prompt="a red door", count=1, model="", cancelled=None, seed=100,
-                quality="auto", negative=""):
+                quality="auto", negative="", resolution="auto", size=(8, 6)):
         req = base.GenerationRequest(self.paths["image"], self.paths["mask"], self.paths["mask"],
-                                     prompt, 8, 6, seed=seed, count=count, model=model,
-                                     negative_prompt=negative, quality=quality)
+                                     prompt, size[0], size[1], seed=seed, count=count,
+                                     model=model, negative_prompt=negative, quality=quality,
+                                     resolution=resolution)
         with mock.patch.object(base, "http_request", fake):
             return self.backend.generate(req, "id:secret", cancelled=cancelled)
 
@@ -327,6 +328,68 @@ class FalTests(unittest.TestCase):
         self.assertEqual((w % 16, h % 16), (0, 0))
         self.assertAlmostEqual(w / float(h), 16 / 9.0, delta=0.1)
         self.assertLessEqual(w * h, 1.1 * 1024 * 1024)
+
+    def test_resolution_tiers(self):
+        b = self.backend
+        req = lambda m, w, h, r: base.GenerationRequest("i", "m", "m", "door", w, h, model=m,
+                                                         resolution=r)
+        urls = {"image": "https://i", "mask": "https://m"}
+
+        def body(model, res, w=5000, h=2800):
+            mw, mh = b.model_size(w, h, model, res)
+            r = req(model, mw, mh, res)
+            spec = b.model_spec(model)
+            return fal.build_payload(spec, r, "door", urls, 1, 1, tier=b.request_tier(r, model))
+
+        self.assertEqual(body("google/nano-banana-2.1/edit", "4K")["resolution"], "4K")
+        self.assertEqual(body("fal-ai/nano-banana-pro/edit", "2K")["resolution"], "2K")
+        self.assertEqual(body("fal-ai/nano-banana-pro/edit", "auto")["resolution"], "1K")
+        self.assertEqual(body("blackforestlabs/flux-3/edit-image", "2K")["resolution"], "2k")
+        self.assertEqual(body("xai/grok-imagine-image/v2.0/edit", "4K")["resolution"], "2k")
+        self.assertEqual(body("bytedance/seedream/v5/pro/edit", "2K")["image_size"], "auto_2K")
+        self.assertEqual(body("bytedance/seedream/v5/pro/edit", "4K")["image_size"], "auto_2K")
+        self.assertEqual(body("bytedance/seedream/v5/lite/edit", "4K")["image_size"], "auto_4K")
+        self.assertEqual(body("bytedance/seedream/v5/lite/edit", "1K")["image_size"], "auto_2K")
+        # A crop smaller than the tier asks for the tier that holds it.
+        self.assertEqual(body("fal-ai/nano-banana-pro/edit", "4K", 1100, 900)["resolution"],
+                         "1K")
+        # GPT Image: exact size, up to 3840 x 2160.
+        gpt = body("openai/gpt-image-2/edit", "4K", 8000, 4500)
+        self.assertEqual(gpt["image_size"], {"width": 3840, "height": 2160})
+        self.assertEqual(b.size_plan(8000, 4500, "openai/gpt-image-2/edit", "4K").note,
+                         "model max 8.3 MP")
+        # Mask models answer at the input size: the crop goes up to 2K.
+        w, h = b.model_size(5000, 2800, "fal-ai/flux-pro/v1/fill", "2K")
+        self.assertAlmostEqual(w * h / 4194304.0, 1.0, delta=0.03)
+        self.assertEqual(b.size_plan(5000, 2800, "fal-ai/flux-pro/v1/fill", "4K").note,
+                         "model max 2K")
+        self.assertNotIn("resolution", body("fal-ai/flux-pro/v1/fill", "2K"))
+        w, h = b.model_size(5000, 2800, "ideogram/v4.5/edit", "2K")
+        self.assertLessEqual(w * h, 2048 * 2048)
+
+    def test_generate_sends_the_tier(self):
+        b, _ = self.body_for("fal-ai/nano-banana-pro/edit", resolution="4K", size=(3840, 2160))
+        self.assertEqual(b["resolution"], "4K")
+        b, _ = self.body_for("fal-ai/nano-banana-pro/edit", resolution="auto", size=(3840, 2160))
+        self.assertEqual(b["resolution"], "1K")
+
+    def test_discovered_resolution_tiers(self):
+        def model(props, required=("prompt", "image_urls")):
+            return {"endpoint_id": "x/edit", "metadata": {"display_name": "X"}, "openapi": {
+                "paths": {"/x/edit": {"post": {"requestBody": {"content": {
+                    "application/json": {"schema": {"$ref": "#/components/schemas/In"}}}}}}},
+                "components": {"schemas": {"In": {"properties": props,
+                                                  "required": list(required)}}}}}
+
+        base_props = {"prompt": {"type": "string"}, "image_urls": {"type": "array"},
+                      "aspect_ratio": {"enum": ["auto", "16:9", "1:1"]}}
+        spec = fal.spec_from_openapi(model(dict(base_props, resolution={
+            "enum": ["0.5K", "1K", "2K", "4K"]})))
+        self.assertEqual(spec.extra["resolutions"], ("1K", "2K", "4K"))
+        self.assertEqual((spec.extra["resolution_field"], spec.extra["resolution_values"]["2K"]),
+                         ("resolution", "2K"))
+        spec = fal.spec_from_openapi(model(dict(base_props)))
+        self.assertEqual(spec.extra["resolutions"], ())          # aspect only: fixed size
 
     # ------------------------------------------------------------------ errors
 

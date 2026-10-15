@@ -25,9 +25,10 @@ class StabilityBackend(Backend):
     env_var = "STABILITY_API_KEY"
     description = "True masked inpainting; empty prompt = object removal."
     grow_mask = 5
+    default_resolutions = ()    # fixed: ~1 MP whatever the resolution setting
 
-    def model_size(self, width, height, model=""):
-        # ~1 MP, sides on a 64 px grid.
+    def model_size(self, width, height, model="", resolution="auto"):
+        # ~1 MP, sides on a 64 px grid (the resolution setting doesn't apply).
         return region.scale_to_pixel_budget(width, height, 1024 * 1024, 64,
                                             min_side=256, max_aspect=2.5)
 

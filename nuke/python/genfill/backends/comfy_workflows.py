@@ -27,7 +27,7 @@ import json
 import math
 import os
 
-from .base import ModelSpec
+from .base import TIER_PIXELS, TIERS, ModelSpec, normalize_resolution
 from .. import region
 
 T_IMAGE, T_MASK, T_PROMPT = "genfill image", "genfill mask", "genfill prompt"
@@ -60,11 +60,27 @@ class Workflow(object):
     def spec(self):
         note = self.description if not self.error else "Not usable: " + self.error
         return ModelSpec(self.id, self.label, kind=self.kind, erase=self.empty_prompt,
-                         max_count=10, note=note)
+                         max_count=10, note=note, resolutions=self.resolutions())
 
-    def model_size(self, width, height):
+    def resolutions(self):
+        """Tiers this workflow can run: those whose square side fits the sidecar ``max_side``
+        (1K always)."""
+        max_side = int(self.meta.get("max_side", 2048))
+        return tuple(t for t in TIERS if t == "1K" or math.sqrt(TIER_PIXELS[t]) <= max_side)
+
+    def model_size(self, width, height, tier="auto"):
+        """Size for a crop of ``width`` x ``height`` at ``tier`` (already clamped).
+
+        The sidecar ``pixels`` is the 1K (and auto) budget; 2K and 4K scale it by 4 and 16,
+        never past ``max_side`` nor beyond the crop's own pixel count.
+        """
         m = self.meta
-        return region.scale_to_pixel_budget(width, height, int(m.get("pixels", 1048576)),
+        pixels = int(m.get("pixels", 1048576))
+        tier = normalize_resolution(tier)
+        if tier != "auto":
+            scale = TIER_PIXELS[tier] // TIER_PIXELS["1K"]
+            pixels = min(pixels * scale, int(width) * int(height))
+        return region.scale_to_pixel_budget(width, height, pixels,
                                             int(m.get("multiple", 64)),
                                             min_side=int(m.get("min_side", 512)),
                                             max_side=int(m.get("max_side", 2048)),
