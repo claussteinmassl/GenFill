@@ -128,7 +128,7 @@ class FalTests(unittest.TestCase):
         b = self.backend
         self.assertEqual((b.id, b.label, b.env_var, b.needs_key, b.default_model),
                          ("fal", "fal.ai", "FAL_KEY", True, "fal-ai/flux-pro/v1/fill"))
-        self.assertEqual(len(b.catalogue), 12)
+        self.assertEqual(len(b.catalogue), 20)
         self.assertEqual(b.model_spec("").erase, "fal-ai/flux-pro/v1/erase")
 
     def test_submit_poll_result_and_cdn_upload(self):
@@ -222,6 +222,50 @@ class FalTests(unittest.TestCase):
         self.assertEqual((b["num_images"], b["rendering_speed"], b["expand_prompt"]),
                          (8, "QUALITY", False))
         self.assertNotIn("output_format", b)
+
+    def test_ideogram_4_5_inverted_mask_and_quality(self):
+        b, fake = self.body_for("ideogram/v4.5/edit", count=8, quality="low", prompt="")
+        self.assertEqual(b["image_url"], "https://v3b.fal.media/files/b/1.png")
+        self.assertEqual(b["mask_url"], "https://v3b.fal.media/files/b/2.png")
+        self.assertEqual((b["num_images"], b["quality"], b["seed"]), (8, "low", 100))
+        self.assertEqual(b["prompt"], fal.REMOVAL_PROMPT)
+        for key in ("output_format", "image_size", "rendering_speed"):
+            self.assertNotIn(key, b)
+        ups = [c for c in fake.calls if c["url"] == fal.CDN_UPLOAD_URL]
+        mask = pngio.read(ups[1]["body"])
+        self.assertEqual(set(mask.rows[0]), {0, 255})
+        self.assertEqual(mask.rows[0][0], 255)   # keep area -> white ("black edits")
+        self.assertEqual(mask.rows[0][3], 0)     # fill area -> black
+        b, _ = self.body_for("ideogram/v4.5/edit")
+        self.assertNotIn("quality", b)           # auto = provider default (medium)
+
+    def test_gpt_image_2_5_mask_edit(self):
+        for model in ("openai/gpt-image-2.5/flare/edit", "openai/gpt-image-2.5/sunburst/edit"):
+            b, fake = self.body_for(model, count=3, quality="low")
+            self.assertTrue(fake.find("POST", "queue.fal.run/")[0]["url"].endswith(model))
+            self.assertEqual(b["image_urls"], ["https://v3b.fal.media/files/b/1.png"])
+            self.assertEqual(b["mask_url"], "https://v3b.fal.media/files/b/2.png")
+            self.assertEqual((b["num_images"], b["quality"]), (3, "low"))
+            self.assertEqual(b["image_size"], {"width": 8, "height": 6})
+            ups = [c for c in fake.calls if c["url"] == fal.CDN_UPLOAD_URL]
+            self.assertEqual(pngio.read(ups[1]["body"]).rows[0][3], 255)   # white = fill
+            b, _ = self.body_for(model)
+            self.assertEqual(b["quality"], "high")
+
+    def test_new_reference_edit_endpoints(self):
+        b, _ = self.body_for("google/nano-banana-2.1/edit", count=2)
+        self.assertEqual(len(b["image_urls"]), 2)       # crop + mask as second image
+        self.assertNotIn("mask_url", b)
+        self.assertEqual((b["num_images"], b["resolution"], b["aspect_ratio"], b["seed"]),
+                         (2, "1K", "auto", 100))
+        b, _ = self.body_for("bytedance/seedream/v5/lite/edit")
+        self.assertEqual(b["image_size"], "auto_2K")
+        self.assertNotIn("output_format", b)
+        b, _ = self.body_for("bytedance/seedream/v5/flash/edit")
+        self.assertEqual((b["image_size"], b["output_format"]), ("auto_1K", "png"))
+        b, _ = self.body_for("xai/grok-imagine-image/v2.0/edit", quality="high")
+        self.assertNotIn("quality", b)                  # grok only knows low/medium
+        self.assertNotIn("seed", b)
 
     def test_gpt_image_list_field_and_size(self):
         b, _ = self.body_for("openai/gpt-image-2/edit", quality="medium")

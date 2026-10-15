@@ -93,8 +93,22 @@ class MagnificTests(unittest.TestCase):
         self.assertEqual(b.auth, "oauth")
         self.assertEqual(b.default_model, "retouch-auto")
         ids = b.model_ids()
-        self.assertEqual(len(ids), 18)
+        self.assertEqual(len(ids), 37)
         self.assertNotIn("retouch-reference", ids)
+        self.assertNotIn("retouch-lora", ids)
+        for mid in ("gpt-2-mini", "retouch-inpaint-lab-gpt-2-mini", "retouch-ideogram-4-5",
+                    "seedream-5-lite", "seedream-5-flash", "flux-2-max"):
+            self.assertIn(mid, ids)
+        self.assertEqual(b.model_spec("flux-2").label, "Flux.2 Pro")
+        self.assertEqual(b.model_spec("gpt-2-mini").label, "GPT 2.5 (beta)")
+        self.assertEqual(b.model_spec("retouch-inpaint-lab-gpt-2-mini").label,
+                         "Retouch GPT 2.5 (beta)")
+        self.assertEqual(b.model_spec("retouch-ideogram-4-5").label,
+                         "Retouch Ideogram 4.5 (beta)")
+        for m in b.catalogue:
+            if m.note == magnific.BETA_NOTE:
+                self.assertIn("(beta)", m.label)
+            self.assertIn(m.kind, ("inpaint", "edit"))
         self.assertEqual(b.model_spec("retouch-classic").erase, "retouch-auto")
         self.assertEqual(b.model_spec("retouch-future").kind, "inpaint")
         self.assertEqual(b.model_spec("some-new-model").kind, "edit")
@@ -202,6 +216,62 @@ class MagnificTests(unittest.TestCase):
         self.assertNotIn("width", args)
         self.assertNotIn("seed", args)
         self.assertIn("Remove the object", args["prompt"])
+
+    def test_edit_quality_passthrough(self):
+        tools = upload_tools({
+            "images_generate": lambda a: {"creations": [{"identifier": "G1"}]},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        for model, quality, sent in (("gpt-2-mini", "high", "high"),
+                                     ("gpt-2-mini", "low", "low"),
+                                     ("gpt-2", "medium", "medium"),
+                                     ("gpt-2", "auto", None),
+                                     ("ideogram-4-5", "high", "high"),
+                                     ("imagen-nano-banana-2-flash", "high", None)):
+            client, _ = self.run_with(tools, self.request(model=model, quality=quality,
+                                                          count=1))
+            args = client.named("images_generate")[0]
+            self.assertEqual(args["mode"], model)
+            self.assertEqual(args.get("quality"), sent, (model, quality))
+        self.assertEqual(args["resolution"], "1k")
+
+    def test_edit_per_model_aspect_ratios(self):
+        tools = upload_tools({
+            "images_generate": lambda a: {"creations": [{"identifier": "G1"}]},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        # 21:9 is in the default list but not in Flux.2's, which snaps to 2:1 instead.
+        client, _ = self.run_with(tools, self.request(model="flux-2", width=2100, height=900,
+                                                      count=1))
+        self.assertEqual(client.named("images_generate")[0]["aspectRatio"], "2:1")
+        w, h = self.backend.model_size(2100, 900, "flux-2")
+        self.assertAlmostEqual(float(w) / h, 2.0, places=1)
+        w, h = self.backend.model_size(2100, 900, "flux-kontext")  # default list: 21:9
+        self.assertGreater(float(w) / h, 2.2)
+        client, _ = self.run_with(tools, self.request(model="seedream-5-flash", width=1250,
+                                                      height=1000, count=1))
+        args = client.named("images_generate")[0]
+        self.assertEqual(args["aspectRatio"], "4:3")    # no 5:4 for Seedream 5 Flash
+        self.assertEqual(args["resolution"], "1.5k")
+        client, _ = self.run_with(tools, self.request(model="seedream-5-lite", count=1))
+        self.assertEqual(client.named("images_generate")[0]["resolution"], "2k")
+
+    def test_new_retouch_models(self):
+        ids = iter(["R%d" % i for i in range(10)])
+        tools = upload_tools({
+            "images_retouch": lambda a: {"creation": {"identifier": next(ids)}},
+            "creations_wait": lambda a: done(a["identifiers"]),
+        })
+        client, _ = self.run_with(tools, self.request(model="retouch-inpaint-lab-gpt-2-mini",
+                                                      count=1))
+        args = client.named("images_retouch")[0]
+        self.assertEqual((args["model"], args["mode"], args["resolution"]),
+                         ("retouch-inpaint-lab-gpt-2-mini", "replace", "1k"))
+        client, _ = self.run_with(tools, self.request(model="retouch-ideogram-4-5", count=1,
+                                                      prompt=""))
+        args = client.named("images_retouch")[0]
+        self.assertEqual((args["model"], args["mode"]), ("retouch-ideogram-4-5", "erase"))
+        self.assertNotIn("resolution", args)
 
     # ---- waiting ----
     def test_wait_loop_with_pending_round(self):

@@ -25,10 +25,11 @@ class FakeClient(object):
     def call_tool(self, name, args, timeout=None):
         self.calls.append((name, args))
         if name == "media_upload":
-            return {"uploads": [{"upload_url": "https://up/x?sig=1", "media_id": "m1",
+            mid = "m%d" % len(self.named("media_upload"))   # m1, m2, ...
+            return {"uploads": [{"upload_url": "https://up/x?sig=1", "media_id": mid,
                                  "content_type": "image/png"}]}
         if name == "media_confirm":
-            return {"results": [{"media_id": "m1", "status": "uploaded"}]}
+            return {"results": [{"media_id": args["media_ids"][0], "status": "uploaded"}]}
         if name == "generate_image_batch":
             if self.submit is not None:
                 return self.submit
@@ -194,6 +195,60 @@ class HiggsfieldTests(unittest.TestCase):
         for m in self.backend.catalogue:
             want = "image" if m.id == "gpt_image_2" else "image_references"
             self.assertEqual(m.extra["media_role"], want, m.id)
+
+    def test_mask_role_models_stay_reference_edits_until_live_tested(self):
+        self.assertFalse(higgsfield.MASK_ROLE_LIVE)
+        for mid in ("nano_banana_2", "nano_banana_2_1", "nano_banana_2_lite", "ideogram_4_5"):
+            spec = self.backend.model_spec(mid)
+            self.assertEqual((spec.kind, spec.extra["mask"]), ("edit", False), mid)
+        for mid in ("openai_hazel", "grok_image_2_0", "grok_image", "kling_omni_image"):
+            self.assertIn(mid, self.backend.model_ids())
+
+    def masked_backend(self, spec):
+        backend = higgsfield.HiggsfieldBackend()
+        backend.catalogue = (spec,)
+        return backend
+
+    def test_mask_media_for_mask_role_models(self):
+        spec = higgsfield._spec("nano_banana_2", "Nano Banana 2", higgsfield._CLASSIC,
+                                mask=True, inpaint_flag=True)
+        self.assertEqual(spec.kind, "inpaint")
+        with open(self.path, "wb") as fh:
+            fh.write(PNG + b"plate")
+        fd, mask_path = tempfile.mkstemp(suffix=".png")
+        os.write(fd, PNG + b"mask")
+        os.close(fd)
+        self.addCleanup(os.remove, mask_path)
+        self.backend = self.masked_backend(spec)
+        client = FakeClient([done("completed", "completed")])
+        out = self.run_generate(client, self.request(model="nano_banana_2", mask_path=mask_path,
+                                                     prompt=""))
+        self.assertEqual(len(out), 2)
+        uploads = client.named("media_upload")
+        self.assertEqual([u["filename"] for u in uploads],
+                         ["genfill_plate.png", "genfill_mask.png"])
+        self.assertEqual([c["media_ids"] for c in client.named("media_confirm")],
+                         [["m1"], ["m2"]])
+        self.assertEqual([c[0][1] for c in self.put.call_args_list],
+                         [PNG + b"plate", PNG + b"mask"])     # the RGB mask, white = fill
+        for r in client.named("generate_image_batch")[0]["requests"]:
+            p = r["params"]
+            self.assertEqual(p["medias"], [{"role": "image_references", "value": "m1"},
+                                           {"role": "mask", "value": "m2"}])
+            self.assertIs(p["is_inpaint"], True)
+            self.assertIn("masked area", p["prompt"])      # mask wording, not the ref wording
+
+    def test_mask_media_without_inpaint_flag(self):
+        spec = higgsfield._spec("ideogram_4_5", "Ideogram 4.5", higgsfield._IDEOGRAM,
+                                seed=True, quality={"high": "high"}, mask=True)
+        self.backend = self.masked_backend(spec)
+        client = FakeClient([done("completed")])
+        self.run_generate(client, self.request(model="ideogram_4_5", count=1, quality="high"))
+        p = client.named("generate_image_batch")[0]["requests"][0]["params"]
+        self.assertEqual([m["role"] for m in p["medias"]], ["image_references", "mask"])
+        self.assertNotIn("is_inpaint", p)
+        self.assertEqual((p["quality"], p["seed"]), ("high", 7))
+        self.assertTrue(p["prompt"].startswith("a red car Only change the masked area"))
 
     def test_seedream_never_picks_unsupported_ratio(self):
         for model in ("seedream_5_0_flash", "seedream_v5_lite", "seedream_v4_5"):

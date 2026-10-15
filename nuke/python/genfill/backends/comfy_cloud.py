@@ -4,8 +4,10 @@
   empty prompt) run as ONE API-format graph: ``LoadImage`` + ``LoadImageMask`` feeding N fill
   nodes (consecutive seeds), each into its own ``SaveImage``. One job, one wait, one
   ``get_output``.
-* Partner edit models without a mask (Flux Kontext, Nano Banana, Qwen, Flux 2) go through
-  ``partner_generate`` with the plate as ``image`` media, one call per variation.
+* Partner models go through ``partner_generate``, one call per variation: edit models without a
+  mask (Flux Kontext, Nano Banana, Qwen, Flux 2, Grok) get the plate as ``image`` media; partner
+  mask models (GPT Image 2.5 via ``openai/images-generations``, Ideogram V3 edit via
+  ``ideogram/generate``) also get the GenFill mask (white = fill) as ``mask`` media.
 
 Files go up through ``upload_file``: the server hands back a single-use PUT URL (the file
 path is only templated into a curl command, the server never reads it), we PUT the bytes
@@ -71,6 +73,19 @@ PARTNER_SLUGS = {
     "nano-banana-2-lite": "vertexai/nano-banana-2-lite",
     "nano-banana-pro": "vertexai/nano-banana-pro",
     "qwen-image-3": "qwen/qwen-image-3",
+    "flux-2-max": "bfl/flux-2-max",
+    "grok-image-edit": "xai/grok-image-edit",
+    "gpt-image-2.5-flare": "openai/images-generations",
+    "gpt-image-2.5-sunburst": "openai/images-generations",
+    "ideogram-v3-edit": "ideogram/generate",
+}
+
+# Fixed ``partner_generate`` params per model (the variant of a multi-model slug). A mask edit on
+# openai/images-generations sends no default model, so the variant must always be named.
+PARTNER_PARAMS = {
+    "grok-image-edit": {"model": "grok-imagine-image-2.0"},
+    "gpt-image-2.5-flare": {"model": "gpt-image-2.5-flare"},
+    "gpt-image-2.5-sunburst": {"model": "gpt-image-2.5-sunburst"},
 }
 
 
@@ -219,6 +234,15 @@ class ComfyCloudBackend(McpBackend):
                   note="Cheap ~1K tier."),
         ModelSpec("nano-banana-pro", "Nano Banana Pro", "edit", max_count=4),
         ModelSpec("qwen-image-3", "Qwen Image 3", "edit", max_count=4),
+        ModelSpec("flux-2-max", "Flux 2 Max", "edit", max_count=4),
+        ModelSpec("grok-image-edit", "Grok Imagine Image 2.0", "edit", max_count=4,
+                  note="xAI reference edit (grok-imagine-image-2.0)."),
+        ModelSpec("gpt-image-2.5-flare", "GPT Image 2.5 Flare", "inpaint", max_count=4,
+                  note="OpenAI mask edit, faster 2.5 tier."),
+        ModelSpec("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst", "inpaint", max_count=4,
+                  note="OpenAI mask edit, higher-quality 2.5 tier."),
+        ModelSpec("ideogram-v3-edit", "Ideogram V3 Edit", "inpaint", max_count=4,
+                  note="Ideogram V3 mask edit, good with text."),
     )
 
     def model_size(self, width, height, model=""):
@@ -248,15 +272,16 @@ class ComfyCloudBackend(McpBackend):
 
         base_seed = request.seed or random.randint(1, MAX_SEED - request.count)
         step(0.02, "Uploading to Comfy Cloud...")
-        if spec.kind == "edit":
-            plate = self.upload(client, request.image_path, request.read("image_path"))
-            check()
-            return self._partner(client, spec, request, plate, base_seed, step, check,
-                                 cancelled)
         plate = self.upload(client, request.image_path, request.read("image_path"))
         check()
+        if spec.kind == "edit":
+            return self._partner(client, spec, request, plate, None, base_seed, step, check,
+                                 cancelled)
         mask = self.upload(client, request.mask_path, request.read("mask_path"))
         check()
+        if spec.id in PARTNER_SLUGS:    # partner mask edit
+            return self._partner(client, spec, request, plate, mask, base_seed, step, check,
+                                 cancelled)
         node = NODES.get(spec.id)
         if node is None:
             raise BackendError("Comfy Cloud model %r has no mask workflow." % spec.id)
@@ -348,9 +373,18 @@ class ComfyCloudBackend(McpBackend):
         return collect(list(enumerate(urls)), one, cancelled, errors)[0]
 
     # ---- partner edit models ------------------------------------------------
-    def _partner(self, client, spec, request, plate, base_seed, step, check, cancelled):
+    def _partner(self, client, spec, request, plate, mask, base_seed, step, check, cancelled):
+        """``partner_generate`` per variation; ``mask`` (an upload) makes it a mask edit."""
         slug = PARTNER_SLUGS.get(spec.id) or spec.id
-        prompt = ref_prompt(request.prompt)
+        if mask:
+            prompt = request.prompt.strip() or EDIT_EMPTY_PROMPT
+        else:
+            prompt = ref_prompt(request.prompt)
+        medias = [{"role": "image", "name": plate["name"], "subfolder": plate["subfolder"],
+                   "type": "input"}]
+        if mask:
+            medias.append({"role": "mask", "name": mask["name"],
+                           "subfolder": mask["subfolder"], "type": "input"})
         out, errors = [], []
         for i in range(request.count):
             check()
@@ -358,12 +392,13 @@ class ComfyCloudBackend(McpBackend):
                  "Generating variation %d of %d..." % (i + 1, request.count))
             args = {"type": "image", "model": slug, "client_os": client_os(),
                     "prompt": prompt, "seed": (base_seed + i) % MAX_SEED,
-                    "medias": [{"role": "image", "name": plate["name"],
-                                "subfolder": plate["subfolder"], "type": "input"}],
+                    "medias": [dict(m) for m in medias],
                     "confirm": True, "wait_for_output": True}
+            params = dict(PARTNER_PARAMS.get(spec.id) or {})
             if "kontext" in slug:
-                args["params"] = {"aspect_ratio": _closest_aspect(request.width,
-                                                                  request.height)}
+                params["aspect_ratio"] = _closest_aspect(request.width, request.height)
+            if params:
+                args["params"] = params
             try:
                 urls = self._partner_once(client, args, cancelled, step)
             except Cancelled:

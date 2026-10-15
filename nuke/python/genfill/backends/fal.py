@@ -48,6 +48,7 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 # ModelSpec extra keys (all optional; defaults in parentheses):
 #   image_field ("image_urls")  "image_url" (string) or "image_urls" (list)
 #   mask_field (None)           field name for the mask URL, None = the model takes no mask
+#   mask_invert (False)         the model wants black = edit, white = keep (GenFill: white = fill)
 #   mask_as_image (False)       reference edits: append the mask as the second input image
 #   prompt_field ("prompt")     "prompt", "instruction" or None (no prompt at all)
 #   prompt_required (True)      False: an empty prompt is omitted instead of replaced
@@ -62,6 +63,9 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 _MASK = dict(image_field="image_url", mask_field="mask_url", count_field="num_images",
              seed_field="seed")
 _REF = dict(image_field="image_urls", mask_as_image=True)
+_GPT_EDIT = dict(image_field="image_urls", mask_field="mask_url", count_field="num_images",
+                 size="obj", quality_field="quality", budget=1536 * 1024,
+                 fixed={"quality": "high"})
 
 CATALOGUE = (
     ModelSpec("fal-ai/flux-pro/v1/fill", "FLUX.1 Fill [pro]", kind="inpaint", erase=ERASE_MODEL,
@@ -74,10 +78,16 @@ CATALOGUE = (
     ModelSpec("fal-ai/ideogram/v3/edit", "Ideogram v3 Edit", kind="inpaint", max_count=8,
               note="Mask fill, good with text and graphics.", output_format=False,
               fixed={"rendering_speed": "QUALITY", "expand_prompt": False}, **_MASK),
+    ModelSpec("ideogram/v4.5/edit", "Ideogram 4.5 Edit", kind="inpaint", max_count=8,
+              note="Newest Ideogram mask fill, good with text and graphics.",
+              output_format=False, mask_invert=True, quality_field="quality", **_MASK),
     ModelSpec("openai/gpt-image-2/edit", "GPT Image 2 (fal)", kind="inpaint", max_count=4,
-              note="Strong instruction following; mask edit.", image_field="image_urls",
-              mask_field="mask_url", count_field="num_images", size="obj",
-              quality_field="quality", budget=1536 * 1024, fixed={"quality": "high"}),
+              note="Strong instruction following; mask edit.", **_GPT_EDIT),
+    ModelSpec("openai/gpt-image-2.5/flare/edit", "GPT Image 2.5 Flare (fal)", kind="inpaint",
+              max_count=4, note="Newest GPT Image, faster tier; mask edit.", **_GPT_EDIT),
+    ModelSpec("openai/gpt-image-2.5/sunburst/edit", "GPT Image 2.5 Sunburst (fal)",
+              kind="inpaint", max_count=4, note="Newest GPT Image, higher quality; mask edit.",
+              **_GPT_EDIT),
     ModelSpec("fal-ai/qwen-image-edit/inpaint", "Qwen Image Edit Inpaint", kind="inpaint",
               max_count=4, note="Cheap open-model mask inpaint.", size="obj",
               negative_field="negative_prompt", fixed={"strength": 0.93}, **_MASK),
@@ -94,6 +104,12 @@ CATALOGUE = (
               note="Premium removal incl. shadows and reflections; one image per request.",
               image_field="image_url", mask_field="mask_url", prompt_field=None,
               seed_field="seed", seed_max=999, output_format=False, fixed={"mode": "standard"}),
+    ModelSpec("google/nano-banana-2.1/edit", "Nano Banana 2.1 (reference edit)", kind="edit",
+              max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
+              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
+    ModelSpec("fal-ai/nano-banana-2/edit", "Nano Banana 2 (reference edit)", kind="edit",
+              max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
+              seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
     ModelSpec("fal-ai/nano-banana-pro/edit", "Nano Banana Pro (reference edit)", kind="edit",
               max_count=4, note="Re-renders the crop; no mask input.", count_field="num_images",
               seed_field="seed", fixed={"resolution": "1K", "aspect_ratio": "auto"}, **_REF),
@@ -103,6 +119,17 @@ CATALOGUE = (
     ModelSpec("bytedance/seedream/v5/pro/edit", "Seedream 5 Pro Edit (reference edit)",
               kind="edit", max_count=6, note="Region-precise reference edit.",
               count_field="num_images", fixed={"image_size": "auto_1K"}, **_REF),
+    ModelSpec("bytedance/seedream/v5/flash/edit", "Seedream 5 Flash Edit (reference edit)",
+              kind="edit", max_count=6, note="Fast Seedream reference edit.",
+              count_field="num_images", fixed={"image_size": "auto_1K"}, **_REF),
+    ModelSpec("bytedance/seedream/v5/lite/edit", "Seedream 5 Lite Edit (reference edit)",
+              kind="edit", max_count=6, note="Renders at 2K or more (its minimum size).",
+              count_field="num_images", output_format=False,
+              fixed={"image_size": "auto_2K"}, **_REF),
+    ModelSpec("xai/grok-imagine-image/v2.0/edit", "Grok Imagine 2.0 Edit (reference edit)",
+              kind="edit", max_count=4, note="xAI reference edit; no mask input.",
+              count_field="num_images", fixed={"resolution": "1k", "aspect_ratio": "auto"},
+              **_REF),
 )
 
 
@@ -175,7 +202,7 @@ class FalBackend(Backend):
     def _upload_inputs(self, request, spec, headers, check):
         mask = None
         if spec.extra.get("mask_field") or spec.extra.get("mask_as_image"):
-            mask = _binarize(request.read("mask_path"))
+            mask = _binarize(request.read("mask_path"), spec.extra.get("mask_invert", False))
         uploader = _Uploader(headers)
         urls = {"image": uploader.upload("genfill_plate.png", request.read("image_path"))}
         check()
@@ -334,10 +361,11 @@ def build_payload(spec, request, prompt, urls, n, seed):
     return body
 
 
-def _binarize(mask_png):
-    """Opaque binary mask PNG (white = fill) as fal's models expect it."""
+def _binarize(mask_png, invert=False):
+    """Opaque binary mask PNG: white = fill, or black = fill with ``invert``."""
     img = pngio.read(mask_png)
-    table = bytes(bytearray(255 if v >= MASK_THRESHOLD else 0 for v in range(256)))
+    on, off = (0, 255) if invert else (255, 0)
+    table = bytes(bytearray(on if v >= MASK_THRESHOLD else off for v in range(256)))
     for i, row in enumerate(img.rows):
         img.rows[i] = bytearray(bytes(row).translate(table))
     return pngio.encode(img)

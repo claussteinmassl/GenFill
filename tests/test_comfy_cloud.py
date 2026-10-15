@@ -168,6 +168,46 @@ class TestGenerate(Env):
         self.assertNotEqual(calls[0]["seed"], calls[1]["seed"])
         self.assertEqual(self.called("submit_workflow"), [])
 
+    def test_partner_mask_edit_gpt_image_2_5(self):
+        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst"):
+            self.client.calls[:] = []
+            self.uploads[:] = []
+            out = self.b.generate(self.req(model=model, count=2), "k")
+            self.assertEqual(len(out), 2)
+            self.assertEqual(len(self.called("upload_file")), 2)     # plate + mask
+            calls = self.called("partner_generate")
+            self.assertEqual(len(calls), 2)
+            a = calls[0]
+            self.assertEqual(a["model"], "openai/images-generations")
+            self.assertEqual(a["params"], {"model": model})
+            self.assertEqual([m["role"] for m in a["medias"]], ["image", "mask"])
+            self.assertEqual(a["medias"][1]["type"], "input")
+            self.assertEqual(a["prompt"], "grass")       # mask edit: no reference wording
+            self.assertEqual(self.called("submit_workflow"), [])
+        self.assertEqual(self.b.model_spec("gpt-image-2.5-flare").kind, "inpaint")
+
+    def test_partner_mask_edit_ideogram_empty_prompt(self):
+        self.b.generate(self.req(model="ideogram-v3-edit", count=1, prompt=" "), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "ideogram/generate")
+        self.assertNotIn("params", a)
+        self.assertEqual([m["name"] for m in a["medias"]], ["n1.png", "n2.png"])
+        self.assertEqual(a["medias"][1]["role"], "mask")
+        self.assertEqual(a["prompt"], cc.EDIT_EMPTY_PROMPT)
+
+    def test_new_partner_edit_models(self):
+        self.b.generate(self.req(model="grok-image-edit", count=1), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "xai/grok-image-edit")
+        self.assertEqual(a["params"], {"model": "grok-imagine-image-2.0"})
+        self.assertEqual([m["role"] for m in a["medias"]], ["image"])
+        self.client.calls[:] = []
+        self.b.generate(self.req(model="flux-2-max", count=1), "k")
+        a = self.called("partner_generate")[0]
+        self.assertEqual(a["model"], "bfl/flux-2-max")
+        self.assertNotIn("params", a)
+        self.assertEqual(len(self.called("upload_file")), 1)
+
     def test_partner_in_progress_falls_back_to_wait(self):
         self.tools["partner_generate"] = {"prompt_id": "q", "status": "in_progress",
                                           "timed_out": True}

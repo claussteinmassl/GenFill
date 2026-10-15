@@ -30,11 +30,26 @@ ASPECT_RATIOS = ("1:1", "21:9", "16:9", "9:16", "2:3", "3:4", "1:2", "2:1", "5:4
                  "3:2", "4:3")
 
 
+BETA_NOTE = "Beta on Magnific; may need account access."
+_QUALITY = dict((q, q) for q in ("low", "medium", "high"))   # GenFill quality -> model value
+# aspectRatios of models whose list differs from ASPECT_RATIOS (images_models_list).
+_FLUX2_RATIOS = ("1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "1:2", "2:1", "4:5")
+_SEEDREAM_RATIOS = _FLUX2_RATIOS + ("21:9",)
+_SEEDREAM5_RATIOS = ("1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9")
+_IDEOGRAM45_RATIOS = ("1:1", "4:5", "5:4", "3:4", "4:3", "2:3", "3:2", "9:16", "16:9", "1:2",
+                      "2:1", "1:3", "3:1")
+_FLUX3_RATIOS = ("21:9", "2:1", "16:9", "3:2", "7:5", "4:3", "5:4", "1:1", "4:5", "3:4", "5:7",
+                 "2:3", "9:16", "1:2", "9:21")
+_NB_LITE_RATIOS = ("1:1", "2:3", "3:2", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "21:9")
+
+
 def _retouch(id, label, erase=None, **extra):
     return ModelSpec(id, label, kind="inpaint", erase=erase, max_count=8, **extra)
 
 
 def _edit(id, label, **extra):
+    """``extra``: ``custom_size``, ``resolution``, ``quality`` (GenFill -> model value, "auto"
+    always omits it) and ``ratios`` (the model's aspectRatio enum when not ASPECT_RATIOS)."""
     return ModelSpec(id, label, kind="edit", max_count=8, **extra)
 
 
@@ -53,17 +68,48 @@ CATALOGUE = (
              resolution="2k"),
     _retouch("retouch-inpaint-lab-seedream-5-pro", "Retouch Seedream 5 Pro (beta)",
              resolution="1.5k"),
+    _retouch("retouch-inpaint-lab-gpt-2-mini", "Retouch GPT 2.5 (beta)", resolution="1k",
+             note=BETA_NOTE),
+    _retouch("retouch-precise-gpt-2-mini", "Retouch GPT 2.5 Precise (beta)", note=BETA_NOTE),
+    _retouch("retouch-inpaint-lab-gpt-2", "Retouch GPT 2 (beta)", resolution="1k",
+             note=BETA_NOTE),
+    _retouch("retouch-precise-gpt-2", "Retouch GPT 2 Precise (beta)", note=BETA_NOTE),
+    _retouch("retouch-inpaint-lab-nano-banana-2-1", "Retouch Nano Banana 2.1 (beta)",
+             resolution="1k", note=BETA_NOTE),
+    _retouch("retouch-precise-nano-banana-2-1", "Retouch Nano Banana 2.1 Precise (beta)",
+             note=BETA_NOTE),
+    _retouch("retouch-precise-nano-banana-2-flash", "Retouch Nano Banana 2 Precise (beta)",
+             note=BETA_NOTE),
+    _retouch("retouch-precise-nano-banana-pro", "Retouch Nano Banana Pro Precise (beta)",
+             note=BETA_NOTE),
+    _retouch("retouch-ideogram-4-5", "Retouch Ideogram 4.5 (beta)", note=BETA_NOTE),
+    _retouch("retouch-precise-ideogram-4-5", "Retouch Ideogram 4.5 Precise (beta)",
+             note=BETA_NOTE),
     _retouch("retouch-erase", "Retouch Erase (erase only)", erase_only=True),
     # Edit: images_generate with the crop as an image reference.
     _edit("seedream-5-pro", "Seedream 5 Pro", custom_size=True, resolution="1.5k"),
+    _edit("seedream-5-lite", "Seedream 5 Lite", resolution="2k", ratios=_SEEDREAM_RATIOS),
+    _edit("seedream-5-flash", "Seedream 5 Flash", resolution="1.5k", ratios=_SEEDREAM5_RATIOS),
     _edit("imagen-nano-banana-2-flash", "Nano Banana 2", custom_size=True, resolution="1k"),
     _edit("imagen-nano-banana-2", "Nano Banana Pro", custom_size=True, resolution="1k"),
-    _edit("imagen-nano-banana-2-lite", "Nano Banana 2 Lite"),
-    _edit("gpt-2", "GPT 2", custom_size=True, resolution="1k"),
+    _edit("imagen-nano-banana-2-1", "Nano Banana 2.1 (beta)", custom_size=True,
+          resolution="1k", note=BETA_NOTE),
+    _edit("imagen-nano-banana-2-lite", "Nano Banana 2 Lite", ratios=_NB_LITE_RATIOS),
+    _edit("gpt-2-mini", "GPT 2.5 (beta)", custom_size=True, resolution="1k", quality=_QUALITY,
+          note=BETA_NOTE),
+    _edit("gpt-2", "GPT 2", custom_size=True, resolution="1k", quality=_QUALITY),
+    _edit("ideogram-4-5", "Ideogram 4.5 (beta)", quality=_QUALITY, ratios=_IDEOGRAM45_RATIOS,
+          note=BETA_NOTE),
     _edit("flux-kontext", "Flux.1 Kontext Pro"),
     _edit("flux-kontext-high", "Flux.1 Kontext Max"),
-    _edit("flux-2", "Flux.2", resolution="1k"),
-    _edit("seedream-4-5", "Seedream 4.5"),
+    _edit("flux-2", "Flux.2 Pro", resolution="1k", ratios=_FLUX2_RATIOS),
+    _edit("flux-2-max", "Flux.2 Max", resolution="1k", ratios=_FLUX2_RATIOS),
+    _edit("flux-2-flex", "Flux.2 Flex", resolution="1k", ratios=_FLUX2_RATIOS),
+    _edit("flux-3-image", "Flux.3 (beta)", resolution="1k", ratios=_FLUX3_RATIOS,
+          note=BETA_NOTE),
+    _edit("qwen-image-3-0-pro", "Qwen Image 3.0 Pro (beta)", resolution="1k",
+          ratios=_FLUX2_RATIOS, note=BETA_NOTE),
+    _edit("seedream-4-5", "Seedream 4.5", ratios=_SEEDREAM_RATIOS),
 )
 
 
@@ -87,8 +133,7 @@ class MagnificBackend(McpBackend):
     def model_size(self, width, height, model=""):
         spec = self.model_spec(model)
         if spec.kind == "edit" and not spec.extra.get("custom_size"):
-            sizes = region.aspect_sizes(ASPECT_RATIOS, PIXEL_BUDGET)
-            w, h, _ = region.closest_size(width, height, sizes)
+            w, h, _ = _closest_ratio(spec, width, height)
             return w, h
         # Retouch returns the input size; custom-size edit models take any size.
         return region.scale_to_pixel_budget(width, height, PIXEL_BUDGET, 16, min_side=256,
@@ -182,10 +227,12 @@ class MagnificBackend(McpBackend):
         if spec.extra.get("custom_size"):
             args["width"], args["height"] = request.width, request.height
         else:
-            sizes = region.aspect_sizes(ASPECT_RATIOS, PIXEL_BUDGET)
-            args["aspectRatio"] = region.closest_size(request.width, request.height, sizes)[2]
+            args["aspectRatio"] = _closest_ratio(spec, request.width, request.height)[2]
         if spec.extra.get("resolution"):
             args["resolution"] = spec.extra["resolution"]
+        quality = (spec.extra.get("quality") or {}).get((request.quality or "auto").lower())
+        if quality:
+            args["quality"] = quality
         res = _call(client, "images_generate", args)
         ids = [c.get("identifier") for c in res.get("creations") or [] if isinstance(c, dict)]
         if not ids or not all(ids):
@@ -246,6 +293,12 @@ class MagnificBackend(McpBackend):
 
 
 CATALOGUE_BY_ID = dict((m.id, m) for m in CATALOGUE)
+
+
+def _closest_ratio(spec, width, height):
+    """``(w, h, "a:b")``: the model's aspect ratio closest to ``width`` x ``height``."""
+    sizes = region.aspect_sizes(spec.extra.get("ratios") or ASPECT_RATIOS, PIXEL_BUDGET)
+    return region.closest_size(width, height, sizes)
 
 
 def _number(value):
