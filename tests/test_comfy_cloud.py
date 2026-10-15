@@ -9,7 +9,8 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from genfill.backends import base, cloud, comfy_cloud as cc  # noqa: E402
+from genfill.backends import base, cloud, comfy_cloud as cc, mcp  # noqa: E402
+from fake_servers import FakeMcpServer, text_result  # noqa: E402
 from genfill.backends.base import BackendError, Cancelled, GenerationRequest  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 20
@@ -210,6 +211,69 @@ class TestGenerate(Env):
         with self.assertRaises(Cancelled):
             self.b.generate(self.req(), "k", cancelled=lambda: True)
         self.assertEqual(self.called("submit_workflow"), [])
+
+    def test_partner_downloads_per_variation(self):
+        order = []
+        self.tools["partner_generate"] = lambda a: (order.append("gen") or
+                                                    {"results": [{"url": "https://x/s"}]})
+        with mock.patch.object(cc, "download", lambda u: order.append("dl") or PNG):
+            self.b.generate(self.req(model="nano-banana-2", count=2), "k")
+        self.assertEqual(order, ["gen", "dl", "gen", "dl"])
+
+    def test_wait_tool_error_stops(self):
+        self.tools["wait_for_job"] = {"result": {"status": "tool_error", "message": "bad id"}}
+        with self.assertRaises(BackendError) as cm:
+            self.b.generate(self.req(), "k")
+        self.assertIn("bad id", str(cm.exception))
+        self.assertEqual(len(self.called("wait_for_job")), 1)
+
+    def test_fast_nonterminal_wait_pauses(self):
+        states = [{"result": {"job_status": "executing"}},
+                  {"result": {"job_status": "completed"}}]
+        self.tools["wait_for_job"] = lambda a: states.pop(0)
+        sleeps = []
+        with mock.patch.object(cc.time, "sleep", lambda s: sleeps.append(s)):
+            self.b.generate(self.req(), "k")
+        self.assertGreaterEqual(len(sleeps), 4)
+
+    def test_kontext_model_size_matches_aspect(self):
+        w, h = self.b.model_size(1000, 700, "flux-kontext-pro")
+        self.assertEqual(cc._closest_aspect(w, h), "3:2")
+        self.assertEqual(w % 16, 0)
+        req = self.req(model="flux-kontext-pro", count=1, width=w, height=h)
+        self.nres = 1
+        self.b.generate(req, "k")
+        self.assertEqual(self.called("partner_generate")[0]["params"]["aspect_ratio"], "3:2")
+
+
+class TestRealClientCancel(unittest.TestCase):
+    def test_cancel_reaches_server(self):
+        d = tempfile.mkdtemp()
+        img = os.path.join(d, "i.png")
+        with open(img, "wb") as fh:
+            fh.write(PNG)
+        flag = {"v": False}
+
+        def wait(a):
+            flag["v"] = True
+            return text_result({"result": {"timed_out": True}})
+
+        srv = FakeMcpServer(api_key="k", tools={
+            "upload_file": lambda a: text_result(PROSE),
+            "submit_workflow": lambda a: text_result({"result": {"prompt_id": "p9"}}),
+            "wait_for_job": wait,
+            "cancel_job": lambda a: text_result({"result": {"status": "cancelled"}}),
+        })
+        self.addCleanup(srv.close)
+        b = cc.ComfyCloudBackend()
+        b.server_url = srv.url
+        req = GenerationRequest(img, img, img, "x", 64, 64, seed=1, count=1,
+                                model="flux-pro-fill")
+        with mock.patch.object(cc, "put_bytes",
+                               lambda *a, **k: b'{"name": "a.png", "subfolder": ""}'):
+            with self.assertRaises(Cancelled):
+                b.generate(req, "k", cancelled=lambda: flag["v"])
+        self.assertIn(("cancel_job", {"prompt_id": "p9"}), srv.calls)
 
 
 if __name__ == "__main__":

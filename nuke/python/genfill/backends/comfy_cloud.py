@@ -18,6 +18,7 @@ import json
 import random
 import re
 import sys
+import time
 
 from .base import (EDIT_EMPTY_PROMPT, BackendError, Cancelled, ModelSpec,
                    check_image, download)
@@ -148,10 +149,22 @@ def _check_tool(res, what):
     return info
 
 
+def _snapped(w, h, budget=1024 * 1024):
+    """``(width, height, "a:b")``: the supported aspect closest to ``w`` x ``h``."""
+    sizes = region.aspect_sizes(["%d:%d" % ab for ab in ASPECTS], budget, 16)
+    return region.closest_size(w, h, sizes)
+
+
 def _closest_aspect(w, h):
-    r = float(w) / h
-    a, b = min(ASPECTS, key=lambda ab: abs(ab[0] / float(ab[1]) - r))
-    return "%d:%d" % (a, b)
+    return _snapped(w, h)[2]
+
+
+def _pause(seconds, cancelled):
+    """Sleep ``seconds`` in short steps, raising :class:`Cancelled` if asked to stop."""
+    for _ in range(max(1, int(seconds / 0.25))):
+        if cancelled and cancelled():
+            raise Cancelled("Cancelled")
+        time.sleep(0.25)
 
 
 class ComfyCloudBackend(McpBackend):
@@ -185,8 +198,11 @@ class ComfyCloudBackend(McpBackend):
     )
 
     def model_size(self, width, height, model=""):
-        kind = self.model_spec(model).kind
-        multiple = 32 if kind != "edit" else 16
+        spec = self.model_spec(model)
+        if spec.kind == "edit" and "kontext" in (PARTNER_SLUGS.get(spec.id) or spec.id):
+            # Kontext takes an aspect_ratio from ASPECTS: send the plate in exactly that shape.
+            return _snapped(width, height)[:2]
+        multiple = 32 if spec.kind != "edit" else 16
         return region.scale_to_pixel_budget(width, height, 1024 * 1024, multiple,
                                             min_side=256, max_aspect=3.0)
 
@@ -253,9 +269,9 @@ class ComfyCloudBackend(McpBackend):
 
     def _wait(self, client, prompt_id, cancelled, step):
         def once():
-            info = _flat(client.call_tool(
+            info = _check_tool(client.call_tool(
                 "wait_for_job", {"prompt_id": prompt_id, "max_wait_seconds": WAIT_SECONDS},
-                timeout=WAIT_SECONDS + 30))
+                timeout=WAIT_SECONDS + 30), "wait")
             state = info.get("job_status") or info.get("raw_status") or info.get("status")
             if state in ("completed", "succeeded"):
                 return info
@@ -264,12 +280,18 @@ class ComfyCloudBackend(McpBackend):
                                    % ("was cancelled" if state == "cancelled" else "failed",
                                       _fail_text(info)))
             step(0.4, "Generating on Comfy Cloud...")
+            if not info.get("timed_out"):
+                _pause(1.5, cancelled)   # the server answered without holding the request
             return None
 
         try:
             return poll(once, cancelled, timeout=MAX_JOB_SECONDS, interval=0,
                         what="Comfy Cloud")
         except Cancelled:
+            # The client's own cancel hook would refuse this call, so lift it first.
+            ctx = getattr(client, "ctx", None)
+            if isinstance(ctx, dict):
+                ctx["cancelled"] = None
             try:
                 client.call_tool("cancel_job", {"prompt_id": prompt_id})
             except BackendError:
@@ -301,7 +323,7 @@ class ComfyCloudBackend(McpBackend):
     def _partner(self, client, spec, request, plate, base_seed, step, check, cancelled):
         slug = PARTNER_SLUGS.get(spec.id) or spec.id
         prompt = ref_prompt(request.prompt)
-        urls = []
+        out = []
         for i in range(request.count):
             check()
             step(0.1 + 0.6 * i / request.count,
@@ -321,8 +343,10 @@ class ComfyCloudBackend(McpBackend):
                 if not pid:
                     raise BackendError("Comfy Cloud returned no result.")
                 self._wait(client, pid, cancelled, step)
-                urls += self._output_urls(client, pid)[:1]
+                urls = self._output_urls(client, pid)[:1]
             else:
-                urls += self._result_urls(info)[:1]
-        return self._download(urls, step, check)
+                urls = self._result_urls(info)[:1]
+            # Download now: the shortlinks only live a few minutes.
+            out += self._download(urls, step, check)
+        return out
 
