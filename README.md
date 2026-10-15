@@ -44,7 +44,7 @@ Current version: **0.9.0** (see [CHANGELOG.md](CHANGELOG.md)).
 | Photoshop | GenFill in Nuke |
 |---|---|
 | Lasso / marquee selection | **✏ Draw Selection**: Roto shapes drawn on the node itself, with the shape list in the same panel. Or use any matte in the **Mask** input, or the Source alpha |
-| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates |
+| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
 | Empty prompt = remove and fill from surroundings | Same. ComfyUI: the workflow's erase partner (e.g. FLUX.1 Fill with a fixed empty-background prompt). Stability AI: their *Erase* model |
 | 3 variations per click, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows; right-click to reuse a prompt, reveal or delete |
 | Generative layer with a layer mask | **output: Comp** (fill blended over the plate through the expanded, feathered selection) or **Layer** (just the fill, in the plate's format, premultiplied by that selection) |
@@ -199,7 +199,7 @@ shows which build is loaded.
 2. With its panel open, the Roto tools are in the Viewer. Draw around what you want to replace.
    Edit, toggle or animate shapes in the **shapes** list right in the panel.
 3. Type a prompt (*"a weathered wooden bench"*) or leave it empty to remove the object. Press
-   **Generate** (or Enter).
+   **Generate** (or Ctrl+Enter, Cmd+Enter on macOS; Enter adds a line).
 4. Click thumbnails or use ‹ › to pick a variation. Generate again to add more.
 5. Adjust **expand** / **feather** to blend, and set **output** to *Comp* or *Layer*.
 
@@ -223,8 +223,8 @@ Source ── GenerativeFill ── output
 
 | Control | Meaning |
 |---|---|
-| Prompt bar + **Generate** | What to generate. Empty = remove. Enter generates |
-| Model menu | Backend picker (ComfyUI, cloud providers) |
+| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Model menu | Backend picker (ComfyUI, cloud providers), and the version menu with the backend's models. *Refresh model list…* at its end fetches the provider's newest models (see [Newer models](#newer-models-discovery)) |
 | Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
 | Cost line (under Generate) | What the next Generate costs with the current model, resolution, quality and number of variations, plus the credit balance where the provider has one: "30 credits for 3 · balance 243,317 (Premium+)", "≈ $0.58 for 3", "free (your GPU)". "≈" marks an estimate. See [Costs and balance](#costs-and-balance) |
 | Variations | Thumbnails of every generation; ‹ › to browse; right-click for reuse prompt / reveal / delete |
@@ -240,11 +240,11 @@ Source ── GenerativeFill ── output
 | Knob | Meaning |
 |---|---|
 | model / model version | Backend, and the model of a cloud backend: pick from the version menu next to *Model* (empty = default) or type any id the provider accepts (e.g. `gpt-image-1.5`) |
-| quality | Speed vs quality (OpenAI: quality level; ComfyUI workflows ignore it) |
+| quality | Speed vs quality, passed to models that offer it: GPT Image (OpenAI, fal.ai, Magnific, Higgsfield), Ideogram 4.5 (fal.ai, Magnific, Higgsfield), Higgsfield Hazel and Grok Image 2.0. *auto* = the model's default. Other models and ComfyUI workflows ignore it |
 | **resolution** | Processing resolution: the size the crop is sent to the model at. *auto* (default) = each model's usual size (about 1 megapixel). *1K / 2K / 4K* = about 1, 4 or 16 megapixels in the crop's aspect. Never more pixels than the crop has in the plate (a smaller crop goes at its own size). A model that can't go that high runs at its largest size and the panel says so ("model max 2K"); fixed-size models (Stability, Kontext, ...) ignore it. Providers with a resolution option get the matching value. Higher costs more |
 | variations | Variations per click (default 3, like Photoshop) |
 | seed | 0 = new random seed each click |
-| negative prompt | Things to avoid (Stability, and ComfyUI workflows with a `GenFill Negative` node) |
+| negative prompt | Things to avoid, multi-line (Stability, and ComfyUI workflows with a `GenFill Negative` node) |
 | context | How much surrounding image the model sees, as a fraction of the selection size (default 0.35) |
 | min region | Smallest crop sent, in plate pixels (default 512) |
 | **color pipeline** | How the plate is encoded for the model. See [Color science](#color-science-a-linear-pipeline-with-display-referred-models) |
@@ -280,10 +280,10 @@ variation restores it exactly, even if you've changed the selection or color set
 | **ComfyUI** (default) | Any workflow you can build in ComfyUI. Shipped: FLUX.1 Fill [dev] (default), plus Comfy API workflows (FLUX Pro Fill, Bria, Recraft) | Your ComfyUI server: this machine, the network or RunPod. Free with local models (**FLUX.1 Fill [dev] is non-commercial**); Comfy API workflows bill your Comfy.org account. Empty prompt = the workflow's erase partner. Results come back as 8-bit PNG |
 | Stability AI | Masked inpainting; *Erase* for removal | Cloud, paid. 8-bit |
 | OpenAI GPT Image | Prompt following | Cloud, paid. Re-renders the crop; GenFill composites it back through the mask. 8-bit |
-| fal.ai | One key, many models: FLUX.1 Fill [pro] (default), Ideogram, GPT Image 2, Qwen, Bria, OneReward; reference edits | Cloud, paid. Empty prompt runs FLUX Erase. Mask inpainting at the crop's size. 8-bit |
-| Magnific | Pixel-preserving *Retouch* (default Retouch Auto) plus reference-edit models | Cloud, Magnific credits, sign-in. Empty prompt = erase. 8-bit |
-| Higgsfield | Reference edits (GPT Image 2.5 default, Nano Banana, Seedream, FLUX, Ideogram) | Cloud, Higgsfield credits, sign-in. Re-renders the crop; GenFill composites it back. Ignores the mask. Empty prompt = a "remove it" instruction. 8-bit |
-| Comfy Cloud | Mask inpainting (Flux Pro Fill default, Bria GenFill, Recraft) and partner edit models | Cloud, Comfy credits, API key or sign-in. Empty prompt = Flux Erase / Bria Eraser. 8-bit |
+| fal.ai | One key, many models: FLUX.1 Fill [pro] (default), Ideogram 3 / 4.5, GPT Image 2 / 2.5, Qwen, Bria, OneReward; reference edits (Nano Banana, FLUX.3, Seedream, Grok) | Cloud, paid. Empty prompt runs FLUX Erase. Mask inpainting at the crop's size. 8-bit |
+| Magnific | Pixel-preserving *Retouch* (default Retouch Auto, also with Nano Banana, GPT, Ideogram and Seedream) plus reference-edit models (GPT 2 / 2.5, Nano Banana, Flux.2, Seedream, ...) | Cloud, Magnific credits, sign-in. Empty prompt = erase. 8-bit |
+| Higgsfield | Reference edits (GPT Image 2.5 default, Hazel, Nano Banana, Seedream, FLUX, Ideogram, Grok, Kling) | Cloud, Higgsfield credits, sign-in. Re-renders the crop; GenFill composites it back. Ignores the mask. Empty prompt = a "remove it" instruction. 8-bit |
+| Comfy Cloud | Mask inpainting (Flux Pro Fill default, Bria GenFill, Recraft, GPT Image 2.5, Ideogram V3) and partner edit models (Flux Kontext / 2, Nano Banana, Qwen, Grok) | Cloud, Comfy credits, API key or sign-in. Empty prompt = Flux Erase / Bria Eraser. 8-bit |
 | Offline Preview | Testing the pipeline | No AI; smears surrounding color into the selection |
 
 ### Cloud models and the version menu
@@ -295,16 +295,38 @@ the backend's default; you can also type any model id the provider accepts.
 - **Edit** models see only the crop and an instruction. They re-render the whole crop and
   GenFill composites the result back through the expanded, feathered selection.
 
-| Backend | Default | Inpaint / erase | Edit |
+Curated models (menu labels; the exact ids are in each backend's catalogue in
+`nuke/python/genfill/backends/`). "/" lists the versions of one family:
+
+| Backend | Default | Inpaint / erase (mask) | Edit (reference) |
 |---|---|---|---|
-| fal.ai | `fal-ai/flux-pro/v1/fill` | `fal-ai/flux-pro/v1/fill`, `fal-ai/flux-pro/v1/erase`, `fal-ai/ideogram/v3/edit`, `openai/gpt-image-2/edit`, `fal-ai/qwen-image-edit/inpaint`, `fal-ai/flux-lora-fill`, `fal-ai/onereward`, `fal-ai/bria/genfill`, `fal-ai/finegrain-eraser/mask` | `fal-ai/nano-banana-pro/edit`, `blackforestlabs/flux-3/edit-image`, `bytedance/seedream/v5/pro/edit` |
-| Magnific | `retouch-auto` | `retouch-auto`, `retouch-pro`, `retouch-classic`, `retouch-imagen-nano-banana-2-flash`, `retouch-imagen-nano-banana-2`, `retouch-inpaint-lab-nano-banana-2-flash`, `retouch-inpaint-lab-nano-banana-pro`, `retouch-inpaint-lab-seedream-5-pro`, `retouch-erase` | `seedream-5-pro`, `imagen-nano-banana-2-flash`, `imagen-nano-banana-2`, `imagen-nano-banana-2-lite`, `gpt-2`, `flux-kontext`, `flux-kontext-high`, `flux-2`, `seedream-4-5` |
-| Higgsfield | `gpt_image_2_5` | none (the server rejects masks) | `gpt_image_2_5`, `gpt_image_2`, `nano_banana_2_1`, `nano_banana_2`, `nano_banana_2_lite`, `nano_banana_pro`, `nano_banana`, `ideogram_4_5`, `seedream_v5_pro`, `seedream_5_0_flash`, `seedream_v5_lite`, `seedream_v4_5`, `flux_kontext`, `flux_2`, `flux_3_image` |
-| Comfy Cloud | `flux-pro-fill` | `flux-pro-fill`, `flux-erase`, `bria-genfill`, `bria-eraser`, `recraft-inpaint` | `flux-kontext-pro`, `flux-kontext-max`, `flux-2-pro`, `nano-banana-2`, `nano-banana-2-lite`, `nano-banana-pro`, `qwen-image-3` |
+| fal.ai | FLUX.1 Fill [pro] (`fal-ai/flux-pro/v1/fill`) | FLUX.1 Fill [pro] with FLUX Erase, FLUX.1 Fill [dev], Ideogram v3 / 4.5 Edit, GPT Image 2 / 2.5 Flare / 2.5 Sunburst, Qwen Image Edit Inpaint, OneReward, Bria GenFill, Finegrain Eraser | Nano Banana 2 / 2.1 / Pro, FLUX.3 Edit, Seedream 5 Pro / Flash / Lite, Grok Imagine 2.0 |
+| Magnific | Retouch Auto (`retouch-auto`) | Retouch Auto / Pro / Classic / Erase; Retouch with Nano Banana 2 / 2.1 / Pro, GPT 2 / 2.5, Ideogram 4.5 and Seedream 5 Pro (beta *Inpaint Lab* and *Precise* variants) | GPT 2 / 2.5, Ideogram 4.5, Nano Banana 2 / 2 Lite / 2.1 / Pro, Seedream 4.5 / 5 Pro / Lite / Flash, Flux.1 Kontext Pro / Max, Flux.2 Pro / Max / Flex, Flux.3, Qwen Image 3.0 Pro |
+| Higgsfield | GPT Image 2.5 (`gpt_image_2_5`) | none (the server rejects masks) | GPT Image 2 / 2.5, OpenAI Hazel, Nano Banana / 2 / 2 Lite / 2.1 / Pro, Ideogram 4.5, Seedream 4.5 / 5 Pro / Flash / Lite, FLUX Kontext / FLUX.2 / FLUX.3, Grok Image / 2.0, Kling O1 Image |
+| Comfy Cloud | Flux Pro Fill (`flux-pro-fill`) | Flux Pro Fill with Flux Erase, Bria GenFill with Bria Eraser, Recraft Inpaint, GPT Image 2.5 Flare / Sunburst, Ideogram V3 Edit | Flux Kontext Pro / Max, Flux 2 Pro / Max, Nano Banana 2 / 2 Lite / Pro, Qwen Image 3, Grok Imagine Image 2.0 |
 
 Hover an entry in the menu for its note (cost, strengths). Magnific was verified end to end
 against the live service through GenFill's own code (browser sign-in, upload, Retouch erase,
 download). The other new backends are covered by unit tests with mocked services.
+
+**Unverified (not yet checked against the live services):** the mask polarity of Comfy Cloud
+GPT Image 2.5 and Ideogram V3 Edit and of fal Ideogram 4.5 Edit (GenFill inverts the mask for
+fal Ideogram 4.5); whether Comfy Cloud passes the resolution / size setting through to its
+partner models; the response formats of fal's pricing API and Stability's balance endpoint.
+If a fill changes the area *outside* the selection, or the result size doesn't match the
+resolution, please report it. Higgsfield mask inpainting stays off on purpose: its server
+rejects the mask role (checked 2026-10-15).
+
+### Newer models (discovery)
+
+The version menu also lists models Magnific, Higgsfield and fal.ai added after this release.
+GenFill fetches each provider's model list in the background once a day (Magnific and
+Higgsfield need a sign-in, fal.ai needs no key), or right away with **Refresh model list…** at
+the end of the menu. Discovered entries are marked **(new)**; curated entries keep their tuned
+settings, and a discovered model only adds an id the curated list doesn't have. A failed or
+empty fetch keeps the previous list. The list is cached in `~/.nuke/genfill/models_cache.json`
+(model metadata only, never keys) and is refreshed after 24 hours. Discovery never runs on
+Generate.
 
 ### Costs and balance
 
@@ -571,6 +593,7 @@ uploaded to that company. Use them only when your client / TPN rules allow it.
 | Crops, masks, variations | `genfill_cache\` next to the saved script (`%TEMP%\genfill_cache` if unsaved), or where `GENFILL_CACHE` points. If scripts live in OneDrive/Dropbox this syncs; set **cache folder** or `GENFILL_CACHE` to keep it local |
 | GenFill log (includes prompts) | `test_output\genfill.log` when installed from the repo, else `~\.nuke\genfill\genfill.log` |
 | API keys, the ComfyUI URL and token, sign-in tokens | `~\.nuke\genfill\config.json`, never in .nk scripts. Sign out removes the tokens |
+| Discovered model lists | `~\.nuke\genfill\models_cache.json` (model metadata only; delete it to start over) |
 
 ---
 

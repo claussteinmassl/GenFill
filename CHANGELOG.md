@@ -23,6 +23,36 @@
   pipeline is unchanged.
 - `installers/live_check.py` takes `--workflows DIR` to run ComfyUI workflows from a folder, e.g.
   `python installers/live_check.py comfyui sdxl_inpaint --workflows tests/fixtures/comfyui`.
+- **Multi-line prompts.** Prompt and negative prompt are multi-line text fields (the panel's
+  prompt starts at 3 lines and grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates, Enter
+  adds a line. New nodes use multi-line knobs; existing nodes keep working. The node's info
+  label shows the first line of the prompt.
+- **Newer models in the version menu.** The menu also lists models Magnific, Higgsfield and
+  fal.ai added after this release, marked "(new)". The lists are fetched in the background once
+  a day, or on demand with *Refresh model list…* at the end of the menu, and cached in
+  `~/.nuke/genfill/models_cache.json`. Curated entries keep their tuned settings; a failed fetch
+  keeps the previous list.
+- **Current model catalogues.** Magnific: GPT 2.5 (`gpt-2-mini`), Retouch GPT 2.5 and Retouch
+  Ideogram 4.5, Flux.2 Pro / Max / Flex, Seedream 5 Lite / Flash. fal.ai: Ideogram 4.5 Edit,
+  GPT Image 2.5 Flare / Sunburst, Nano Banana 2.1. Comfy Cloud: GPT Image 2.5, Ideogram V3
+  Edit, Flux 2 Max, Grok. Higgsfield: Hazel, Grok, Kling O1. Magnific GPT models pass the
+  *quality* setting.
+- **Processing resolution.** New *resolution* setting (auto / 1K / 2K / 4K) next to *quality*,
+  also in the panel together with the exact size the next Generate sends ("sends 2048 × 1152
+  (2K)"). Each model gets the crop at about 1, 4 or 16 megapixels: never more than the crop has,
+  clamped to what the model supports ("model max 2K"), with the provider's resolution option
+  set to match. Fixed-size models are unchanged; *auto* keeps the previous sizes.
+  `live_check.py --resolution` tests a tier.
+- **Cost preview and credit balance.** The panel shows the cost of the next Generate for the
+  current model, resolution, quality and variations: live quotes from Magnific, Higgsfield and
+  Comfy Cloud, fal.ai's pricing API, estimates for OpenAI and Stability AI, free for ComfyUI.
+  Magnific, Higgsfield and Stability AI also show the credit balance.
+- **Unverified against the live services** (unit-tested with mocked services only): the mask
+  polarity of Comfy Cloud GPT Image 2.5 and Ideogram V3 Edit, and the mask inversion GenFill
+  applies for fal Ideogram 4.5 Edit; Comfy Cloud passing the resolution / size setting through
+  to partner models; the response formats of fal's pricing API and Stability's balance
+  endpoint. Higgsfield mask inpainting stays off because the server rejects the mask role
+  (verified 2026-10-15).
 
 ## 0.8.0 - 2026-10-15
 
