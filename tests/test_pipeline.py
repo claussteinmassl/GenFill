@@ -437,6 +437,10 @@ class PipelineTests(unittest.TestCase):
         for got, want in zip((b.x0, b.y0, b.x1, b.y1), self._to_crop(rect, gen)):
             self.assertAlmostEqual(got, want, places=1)
         self.assertLess(b.y0, b.y1)                    # top-left origin: t is the smaller y
+        # Worked by hand for this region (606, 285, 698 x 630 -> 408 x 368; top = 915):
+        # x0 = (800 - 606) * 408 / 698, y0 = (915 - 600) * 368 / 630, y1 = (915 - 450) * ...
+        self.assertEqual((gen["region"], gen["model_size"]), ([606, 285, 698, 630], [408, 368]))
+        self.assertEqual((b.x0, b.y0, b.x1, b.y1), (113.4, 184.0, 230.3, 271.62))
         self.assertEqual(gen["boxes"], [{"n": 1, "x0": b.x0, "y0": b.y0, "x1": b.x1,
                                          "y1": b.y1, "prompt": "a red balloon"}])
         self.assertEqual(gen["layout"], "ideogram")
