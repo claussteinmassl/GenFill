@@ -536,14 +536,14 @@ class PipelineTests(unittest.TestCase):
         g = self.g
         self._box_generation()
         fake_nuke.add_shape(g.node(gfnode.ROTO))
-        real = nuke.execute
+        real = engine.nuke.execute
 
         def failing(w, *a):
             if w.name() == gfnode.WRITE_MASK_A:
                 raise RuntimeError("render failed")
             return real(w, *a)
 
-        with mock.patch.object(nuke, "execute", failing):
+        with mock.patch.object(engine.nuke, "execute", failing):
             self.assertFalse(engine.generate(g, "x", blocking=True))
         self.assertIn("render failed", engine.status(g)["error"])
         self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
@@ -592,13 +592,13 @@ class PipelineTests(unittest.TestCase):
         for ov in overlays:
             self.assertFalse(ov["disable"].value())
         seen = []
-        real = nuke.execute
+        real = engine.nuke.execute
 
         def spy(w, *a):
             seen.append([bool(ov["disable"].value()) for ov in overlays])
             return real(w, *a)
 
-        with mock.patch.object(nuke, "execute", spy):
+        with mock.patch.object(engine.nuke, "execute", spy):
             self.assertTrue(engine.generate(g2, "x", blocking=True), engine.status(g2))
         self.assertEqual(len(seen), 4)                    # probe, source, mask, mask alpha
         self.assertTrue(all(all(s) for s in seen), seen)
