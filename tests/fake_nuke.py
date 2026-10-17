@@ -287,8 +287,13 @@ def selectedNodes():
     return []
 
 
-def allNodes():
-    return list(_root_nodes)
+def allNodes(filter=None, recurseGroups=False):
+    found = []
+    for n in _root_nodes:
+        found.append(n)
+        if recurseGroups:
+            found.extend(_all(n))
+    return [n for n in found if filter is None or n.Class() == filter]
 
 
 def show(n):

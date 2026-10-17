@@ -13,6 +13,7 @@ Flow of one Generate click (mirrors Photoshop):
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime
 import getpass
 import os
@@ -349,13 +350,51 @@ def open_cache(node):
 # rendering helpers (main thread)
 # --------------------------------------------------------------------------
 
+def _genfill_groups():
+    """Every GenerativeFill node in the script, also those inside Groups."""
+    try:
+        found = nuke.allNodes("Group", recurseGroups=True)
+    except TypeError:       # an older or stand-in nuke without the arguments
+        found = [n for n in nuke.allNodes() if n.Class() == "Group"]
+    return [n for n in found if "gf_show_boxes" in n.knobs()]
+
+
+@contextlib.contextmanager
+def overlays_off():
+    """Keep the box outline overlay out of a render GenFill runs itself.
+
+    The overlay Switch shows the outlines when ``$gui`` is true, which can also hold for a
+    ``nuke.execute`` inside the interactive session (e.g. GenFill B rendering through
+    GenFill A's output). While the block runs, every GenerativeFill node's overlay Switch is
+    disabled (a disabled Switch passes input 0, the output without outlines); the previous
+    ``disable`` values come back afterwards.
+    """
+    saved = []
+    for group in _genfill_groups():
+        ov = group.node(gfnode.BOX_OVERLAY)
+        if ov is None:
+            continue
+        knob = ov["disable"]
+        saved.append((knob, bool(knob.value())))
+        knob.setValue(True)
+    try:
+        yield
+    finally:
+        for knob, was in saved:
+            try:
+                knob.setValue(was)
+            except Exception:       # the node was deleted during the render
+                gflog.exception("could not restore a box overlay Switch")
+
+
 def _execute(node, write_name, path, frame):
     w = _internal(node, write_name)
     gflog.debug("render %s frame %s -> %s", write_name, frame, path)
     w["file"].setValue(_fwd(path))
     w["disable"].setValue(False)
     try:
-        nuke.execute(w, frame, frame, 1)
+        with overlays_off():
+            nuke.execute(w, frame, frame, 1)
     finally:
         w["disable"].setValue(True)
     if not os.path.exists(path):
@@ -393,6 +432,15 @@ def _set_box_selection(node, on):
     bm = node.node(gfnode.BOX_MASK_SWITCH)
     if bm is not None:
         bm["which"].setValue(1 if on else 0)
+
+
+def _restore_box_selection(node):
+    """Point the box mask Switch back at the shown generation (its matte depends on it)."""
+    sel = gfstate.selected(get_state(node))
+    on = False
+    if sel is not None:
+        on = bool(get_state(node)["generations"][sel[0]].get("box_selection", False))
+    _set_box_selection(node, on)
 
 
 def _clamp_rect(rect, fw, fh):
@@ -500,66 +548,74 @@ def _prepare(node, backend, frame, job_dir):
     if sel == gfnode.SEL_SHAPES and not gfnode.roto_has_shapes(node) and not inside:
         raise UserError("Nothing is selected yet.\nClick 'Draw Selection' and draw a shape "
                         "in the Viewer around what you want to fill.")
+    # The box mask Switch feeds the matte of the shown result too: switch it only for the
+    # mask Writes, then point it back at the shown generation (on success refresh_result
+    # then sets the new one's).
     _set_box_selection(node, False)
+    try:
+        # 1. probe
+        if fw >= fh:
+            pw, ph = PROBE_LONG_SIDE, max(1, int(round(PROBE_LONG_SIDE * fh / float(fw))))
+        else:
+            pw, ph = max(1, int(round(PROBE_LONG_SIDE * fw / float(fh)))), PROBE_LONG_SIDE
+        probe = _internal(node, gfnode.PROBE_REFORMAT)
+        probe["box_width"].setValue(pw)
+        probe["box_height"].setValue(ph)
+        probe_path = os.path.join(job_dir, "probe.png")
+        _execute(node, gfnode.PROBE_WRITE, probe_path, frame)
+        bbox = region.mask_bbox(pngio.read(probe_path))
+        gflog.info("selection probe %dx%d of %dx%d plate: bbox %s", pw, ph, fw, fh, bbox)
+        box_selection = bbox is None and bool(inside)
+        if bbox is None and not box_selection:
+            raise UserError("The selection is empty on frame %d.\nCheck the shapes (are they "
+                            "animated or switched off?), the Mask input or the Source "
+                            "alpha." % frame)
 
-    # 1. probe
-    if fw >= fh:
-        pw, ph = PROBE_LONG_SIDE, max(1, int(round(PROBE_LONG_SIDE * fh / float(fw))))
-    else:
-        pw, ph = max(1, int(round(PROBE_LONG_SIDE * fw / float(fh)))), PROBE_LONG_SIDE
-    probe = _internal(node, gfnode.PROBE_REFORMAT)
-    probe["box_width"].setValue(pw)
-    probe["box_height"].setValue(ph)
-    probe_path = os.path.join(job_dir, "probe.png")
-    _execute(node, gfnode.PROBE_WRITE, probe_path, frame)
-    bbox = region.mask_bbox(pngio.read(probe_path))
-    gflog.info("selection probe %dx%d of %dx%d plate: bbox %s", pw, ph, fw, fh, bbox)
-    box_selection = bbox is None and bool(inside)
-    if bbox is None and not box_selection:
-        raise UserError("The selection is empty on frame %d.\nCheck the shapes (are they "
-                        "animated or switched off?), the Mask input or the Source alpha." % frame)
+        # 2. region (selection plus every enabled box, so the boxes are inside the crop)
+        if box_selection:
+            gflog.info("selection is empty: the %d enabled box(es) are the selection",
+                       len(inside))
+            _set_box_selection(node, True)
+            box = _union(inside)
+        else:
+            box = region.probe_bbox_to_format(bbox, pw, ph, fw, fh)
+        selection = box
+        if inside:
+            box = _union([box] + inside)
+        context = node["gf_context"].value()
+        min_size = int(node["gf_min_size"].value())
+        res = resolution(node)
+        rough = region.expand_region(box, fw, fh, context=context, min_size=min_size)
+        plan = backend.size_plan(rough.w, rough.h, model, res)
+        mw, mh = plan.width, plan.height
+        reg = region.expand_region(box, fw, fh, context=context, min_size=min_size,
+                                   aspect=float(mw) / mh)
 
-    # 2. region (selection plus every enabled box, so the boxes are inside the crop)
-    if box_selection:
-        gflog.info("selection is empty: the %d enabled box(es) are the selection", len(inside))
-        _set_box_selection(node, True)
-        box = _union(inside)
-    else:
-        box = region.probe_bbox_to_format(bbox, pw, ph, fw, fh)
-    selection = box
-    if inside:
-        box = _union([box] + inside)
-    context = node["gf_context"].value()
-    min_size = int(node["gf_min_size"].value())
-    res = resolution(node)
-    rough = region.expand_region(box, fw, fh, context=context, min_size=min_size)
-    plan = backend.size_plan(rough.w, rough.h, model, res)
-    mw, mh = plan.width, plan.height
-    reg = region.expand_region(box, fw, fh, context=context, min_size=min_size,
-                               aspect=float(mw) / mh)
+        gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s, resolution %s: %s)",
+                   reg.x, reg.y, reg.w, reg.h, mw, mh, backend.id, res, plan.text())
 
-    gflog.info("region x=%d y=%d w=%d h=%d -> model size %dx%d (%s, resolution %s: %s)",
-               reg.x, reg.y, reg.w, reg.h, mw, mh, backend.id, res, plan.text())
-
-    # 3. crops
-    for crop_name, ref_name in ((gfnode.CROP_SRC, gfnode.REFORMAT_SRC),
-                                (gfnode.CROP_MASK, gfnode.REFORMAT_MASK)):
-        _internal(node, crop_name)["box"].setValue([reg.x, reg.y, reg.r, reg.t])
-        ref = _internal(node, ref_name)
-        ref["box_width"].setValue(mw)
-        ref["box_height"].setValue(mh)
-    transfer = resolve_transfer(node)
-    colorspace.configure(_internal(node, gfnode.TO_MODEL), _internal(node, gfnode.TO_MODEL_LOG),
-                         _internal(node, gfnode.TO_MODEL_OCIO), transfer, "to")
-    files = {
-        "image": os.path.join(job_dir, "source.png"),
-        "mask": os.path.join(job_dir, "mask.png"),
-        "mask_alpha": os.path.join(job_dir, "mask_alpha.png"),
-        "transfer": transfer,
-    }
-    _execute(node, gfnode.WRITE_SRC, files["image"], frame)
-    _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
-    _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
+        # 3. crops
+        for crop_name, ref_name in ((gfnode.CROP_SRC, gfnode.REFORMAT_SRC),
+                                    (gfnode.CROP_MASK, gfnode.REFORMAT_MASK)):
+            _internal(node, crop_name)["box"].setValue([reg.x, reg.y, reg.r, reg.t])
+            ref = _internal(node, ref_name)
+            ref["box_width"].setValue(mw)
+            ref["box_height"].setValue(mh)
+        transfer = resolve_transfer(node)
+        colorspace.configure(_internal(node, gfnode.TO_MODEL),
+                             _internal(node, gfnode.TO_MODEL_LOG),
+                             _internal(node, gfnode.TO_MODEL_OCIO), transfer, "to")
+        files = {
+            "image": os.path.join(job_dir, "source.png"),
+            "mask": os.path.join(job_dir, "mask.png"),
+            "mask_alpha": os.path.join(job_dir, "mask_alpha.png"),
+            "transfer": transfer,
+        }
+        _execute(node, gfnode.WRITE_SRC, files["image"], frame)
+        _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
+        _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
+    finally:
+        _restore_box_selection(node)
     info = {"style": style, "boxes": active, "selection": tuple(selection),
             "box_selection": box_selection}
     return reg, mw, mh, (fw, fh), files, info

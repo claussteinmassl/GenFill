@@ -74,7 +74,10 @@ newline (`insertPlainText("\n")`). Placeholder/tooltip text updated
   per box an internal `Rectangle` outline (outer Rectangle minus inner Rectangle 3 px smaller,
   colour = palette, area linked by expression to `GenFillBox<N>.box`) merged over the output by a
   `Switch` whose `which` is the expression `$gui && parent.gf_show_boxes` — so it is visible in
-  the interactive Viewer only and never in renders. Group knob `gf_show_boxes` (Boolean, default
+  the interactive Viewer only and not in frame-server or farm renders. Renders GenFill runs
+  itself (`engine._execute`, the dev smoke test) also disable every GenFill node's overlay
+  Switch for their duration (`engine.overlays_off()`), because `$gui` may stay true for a
+  `nuke.execute` inside the session (e.g. a second GenFill downstream). Group knob `gf_show_boxes` (Boolean, default
   True, label "show boxes in Viewer"). The overlay subgraph is rebuilt whenever boxes are added
   or removed (`boxes.rebuild_overlay(group)`).
 - Old nodes: `ensure_current` adds `gf_show_boxes` and the overlay Switch (with no boxes it is a

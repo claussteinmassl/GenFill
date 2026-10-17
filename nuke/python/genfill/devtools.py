@@ -199,8 +199,10 @@ def _render(container, src_node, path, frame):
         w["file"].setValue(path.replace("\\", "/"))
         if "datatype" in w.knobs():
             w["datatype"].setValue("8 bit")
+        from . import engine
         try:
-            nuke.execute(w, frame, frame, 1)
+            with engine.overlays_off():     # never bake box outlines into the render
+                nuke.execute(w, frame, frame, 1)
         finally:
             nuke.delete(w)
     if not os.path.exists(path):

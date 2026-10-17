@@ -502,6 +502,111 @@ class PipelineTests(unittest.TestCase):
         engine.select(g, 0, 0)                          # back to the box generation
         self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
 
+    def _box_generation(self):
+        """Generate once with the boxes as the selection; the box mask Switch is then on."""
+        from genfill import boxes
+        g = self.g
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        fake_nuke.SELECTION_BOX[:] = [0, 0, 0, 0]
+        try:
+            boxes.add_box(g, (300, 300, 700, 600))
+            boxes.set_prompt(g, 1, "a lamp")
+            _req, gen = self._generate_with_layout("flux3")
+        finally:
+            fake_nuke.SELECTION_BOX[:] = [0.4, 0.3, 0.6, 0.6]
+        self.assertTrue(gen["box_selection"])
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
+
+    def test_box_mask_restored_when_the_selection_is_empty(self):
+        from genfill import boxes
+        g = self.g
+        self._box_generation()
+        boxes.set_enabled(g, 1, False)
+        fake_nuke.add_shape(g.node(gfnode.ROTO))
+        fake_nuke.SELECTION_BOX[:] = [0, 0, 0, 0]       # the shape renders nothing
+        try:
+            self.assertFalse(engine.generate(g, "x", blocking=True))
+        finally:
+            fake_nuke.SELECTION_BOX[:] = [0.4, 0.3, 0.6, 0.6]
+        self.assertIn("selection is empty", engine.status(g)["error"])
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
+
+    def test_box_mask_restored_when_a_mask_write_fails(self):
+        from unittest import mock
+        g = self.g
+        self._box_generation()
+        fake_nuke.add_shape(g.node(gfnode.ROTO))
+        real = nuke.execute
+
+        def failing(w, *a):
+            if w.name() == gfnode.WRITE_MASK_A:
+                raise RuntimeError("render failed")
+            return real(w, *a)
+
+        with mock.patch.object(nuke, "execute", failing):
+            self.assertFalse(engine.generate(g, "x", blocking=True))
+        self.assertIn("render failed", engine.status(g)["error"])
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
+
+    def test_box_mask_restored_when_the_backend_fails_or_is_cancelled(self):
+        from unittest import mock
+        from genfill.backends import BackendError, Cancelled
+        g = self.g
+        fake_nuke.add_shape(g.node(gfnode.ROTO))
+        self._generate_with_layout(None)                 # shown: a normal generation (0)
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        from genfill import boxes
+        boxes.add_box(g, (300, 300, 700, 600))           # next one: the boxes are the selection
+        boxes.set_prompt(g, 1, "a lamp")
+        backend = gfnode.backend_for(g)
+        for exc in (BackendError("boom"), Cancelled()):
+            def boom(self, *a, **k):
+                raise exc
+            fake_nuke.SELECTION_BOX[:] = [0, 0, 0, 0]
+            try:
+                with mock.patch.object(type(backend), "layout_style",
+                                       lambda self, model="": "flux3"), \
+                        mock.patch.object(type(backend), "generate", boom), \
+                        mock.patch.object(engine, "refresh_result", lambda node: None):
+                    self.assertFalse(engine.generate(g, "x", blocking=True))
+            finally:
+                fake_nuke.SELECTION_BOX[:] = [0.4, 0.3, 0.6, 0.6]
+            self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 0, exc)
+
+    def test_box_overlays_are_off_in_every_render(self):
+        """Renders GenFill runs itself never see any GenFill node's box outlines."""
+        from unittest import mock
+        from genfill import boxes
+        g = self.g
+        g2 = gfnode.create()                              # downstream: renders through g
+        g2.setInput(0, g)
+        fake_nuke.add_shape(g2.node(gfnode.ROTO))
+        outer = nuke.nodes.Group(name="Outer")
+        with outer:
+            g3 = gfnode.create()                          # inside a Group
+        for n in (g, g2, g3):
+            n["gf_backend"].setValue(g["gf_backend"].value())     # the offline mock
+            gfnode.ensure_current(n)
+            boxes.add_box(n, (800, 450, 1000, 600))
+        overlays = [n.node(gfnode.BOX_OVERLAY) for n in (g, g2, g3)]
+        for ov in overlays:
+            self.assertFalse(ov["disable"].value())
+        seen = []
+        real = nuke.execute
+
+        def spy(w, *a):
+            seen.append([bool(ov["disable"].value()) for ov in overlays])
+            return real(w, *a)
+
+        with mock.patch.object(nuke, "execute", spy):
+            self.assertTrue(engine.generate(g2, "x", blocking=True), engine.status(g2))
+        self.assertEqual(len(seen), 4)                    # probe, source, mask, mask alpha
+        self.assertTrue(all(all(s) for s in seen), seen)
+        for ov in overlays:
+            self.assertFalse(ov["disable"].value())       # restored afterwards
+        # The $gui expression stays for Viewer display and Write-node renders.
+        self.assertEqual(overlays[0]["which"].expression, gfnode.BOX_OVERLAY_EXPR)
+
     def test_no_selection_and_no_boxes_still_explains(self):
         from genfill import boxes
         g = self.g
