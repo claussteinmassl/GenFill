@@ -382,8 +382,8 @@ class Thumbnail(QtWidgets.QLabel):
 class PromptEdit(QtWidgets.QPlainTextEdit):
     """Multi-line prompt field: 3 lines tall, grows to 8 with its content.
 
-    Enter inserts a newline; Ctrl+Enter (Cmd+Enter on macOS, which Qt maps to
-    the control modifier) emits ``submitted``. ``committed`` is emitted when
+    Enter (also Ctrl/Cmd+Enter) emits ``submitted``; Shift+Enter inserts a
+    newline. ``committed`` is emitted when
     the field loses focus so the text can be written to the node.
     """
 
@@ -406,9 +406,11 @@ class PromptEdit(QtWidgets.QPlainTextEdit):
         self.setPlainText(text)
 
     def keyPressEvent(self, event):
-        if (event.key() in (Qt.Key_Return, Qt.Key_Enter)
-                and event.modifiers() & Qt.ControlModifier):
-            self.submitted.emit()
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() & Qt.ShiftModifier:
+                self.insertPlainText("\n")
+            else:
+                self.submitted.emit()
             return
         super(PromptEdit, self).keyPressEvent(event)
 
@@ -560,7 +562,7 @@ class GenFillPanel(QtWidgets.QWidget):
         self.prompt.setObjectName("gfPrompt")
         self.prompt.setPlaceholderText("Describe what you want to generate (optional)")
         self.prompt.setToolTip("Leave empty to remove the selected content and fill from "
-                               "the surroundings.\nCtrl+Enter = Generate, Enter = new line")
+                               "the surroundings.\nEnter = Generate, Shift+Enter = new line")
         self.prompt.submitted.connect(self._on_generate)
         self.prompt.committed.connect(lambda: self.ctl.set_prompt(self.prompt.text()))
         self.prompt.textChanged.connect(self._on_prompt_edited)

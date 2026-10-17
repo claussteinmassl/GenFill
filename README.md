@@ -44,7 +44,7 @@ Current version: **0.9.0** (see [CHANGELOG.md](CHANGELOG.md)).
 | Photoshop | GenFill in Nuke |
 |---|---|
 | Lasso / marquee selection | **✏ Draw Selection**: Roto shapes drawn on the node itself, with the shape list in the same panel. Or use any matte in the **Mask** input, or the Source alpha |
-| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates; Shift+Enter adds a line |
 | Empty prompt = remove and fill from surroundings | Same. ComfyUI: the workflow's erase partner (e.g. FLUX.1 Fill with a fixed empty-background prompt). Stability AI: their *Erase* model |
 | 3 variations per click, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows; right-click to reuse a prompt, reveal or delete |
 | Generative layer with a layer mask | **output: Comp** (fill blended over the plate through the expanded, feathered selection) or **Layer** (just the fill, in the plate's format, premultiplied by that selection) |
@@ -199,7 +199,7 @@ shows which build is loaded.
 2. With its panel open, the Roto tools are in the Viewer. Draw around what you want to replace.
    Edit, toggle or animate shapes in the **shapes** list right in the panel.
 3. Type a prompt (*"a weathered wooden bench"*) or leave it empty to remove the object. Press
-   **Generate** (or Ctrl+Enter, Cmd+Enter on macOS; Enter adds a line).
+   **Generate** (or Enter; Shift+Enter adds a line).
 4. Click thumbnails or use ‹ › to pick a variation. Generate again to add more.
 5. Adjust **expand** / **feather** to blend, and set **output** to *Comp* or *Layer*.
 
@@ -223,7 +223,7 @@ Source ── GenerativeFill ── output
 
 | Control | Meaning |
 |---|---|
-| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Enter generates; Shift+Enter adds a line |
 | Model menu | Backend picker (ComfyUI, cloud providers), and the version menu with the backend's models. *Refresh model list…* at its end fetches the provider's newest models (see [Newer models](#newer-models-discovery)) |
 | Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
 | Cost line (under Generate) | What the next Generate costs with the current model, resolution, quality and number of variations, plus the credit balance where the provider has one: "30 credits for 3 · balance 243,317 (Premium+)", "≈ $0.58 for 3", "free (your GPU)". "≈" marks an estimate. See [Costs and balance](#costs-and-balance) |
