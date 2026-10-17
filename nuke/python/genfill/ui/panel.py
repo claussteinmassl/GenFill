@@ -142,7 +142,8 @@ class NukeController(object):
 
         Args:
             prompt: The prompt as typed in the panel; defaults to the saved knob. Only
-                whether it is empty matters (an empty prompt runs the erase model).
+                whether it is empty matters (an empty prompt runs the erase model, unless an
+                enabled box has text).
         """
         from .. import config, pricing
         b = self._gfnode.backend_for(self.node)
@@ -153,7 +154,8 @@ class NukeController(object):
                                 self._engine.resolution(self.node),
                                 max(1, min(10, self.variations())), plan.width, plan.height,
                                 self.prompt() if prompt is None else prompt,
-                                config.get_api_key(b.id, b.env_var))
+                                config.get_api_key(b.id, b.env_var),
+                                boxes=any(x.enabled and x.prompt.strip() for x in self.boxes()))
 
     def cost_auth(self):
         """``pricing.auth_state`` of the current backend (key set, signed in)."""

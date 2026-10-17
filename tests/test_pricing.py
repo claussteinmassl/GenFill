@@ -250,6 +250,16 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(pricing.key(snap), pricing.key(self.snap(b, prompt="a dog")))
         self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, prompt=" ")))
         self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, count=4)))
+        self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, boxes=True)))
+
+    def test_boxes_reach_the_quote_request(self):
+        b = FakeBackend(pricing.Quote(1), None)
+        pricing.request(self.snap(b, prompt=""), threaded=False)
+        pricing.request(self.snap(b, prompt="", boxes=True), threaded=False)
+        self.assertEqual(b.estimates[0].boxes, [])
+        (box,) = b.estimates[1].boxes
+        self.assertTrue(box.prompt)
+        self.assertEqual((box.x0, box.y0, box.x1, box.y1), (0, 0, 2048, 1152))
 
     def test_forget_balance(self):
         b = FakeBackend(pricing.Quote(1), pricing.Balance(5))

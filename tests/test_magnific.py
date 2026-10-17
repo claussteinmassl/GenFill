@@ -576,6 +576,20 @@ class MagnificCostTests(unittest.TestCase):
         self.assertEqual((q.amount, q.unit, q.exact, q.count), (30, "credits", True, 3))
         self.assertEqual(q.text(), "30 credits for 3")
 
+    def test_quote_with_boxes_and_no_prompt_is_no_erase(self):
+        """The panel's quote picks erase or replace from the boxes, like Generate."""
+        from genfill import pricing
+        self.addCleanup(pricing.reset)
+        client = FakeClient({"simulate_cost": lambda a: {"credits": 10, "isUnlimited": False,
+                                                         "certainty": "exact"}})
+        with mock.patch.object(MagnificBackend, "quiet_client", return_value=client):
+            for boxes in (False, True):
+                snap = pricing.snapshot(self.backend, "retouch-ideogram-4-5", "auto", "auto", 1,
+                                        1024, 1024, "", "", auth=(False, False), boxes=boxes)
+                pricing._fetch_quote(snap, pricing.key(snap))
+        modes = [c["arguments"]["mode"] for c in client.named("simulate_cost")]
+        self.assertEqual(modes, ["erase", "replace"])
+
     def test_retouch_erase_and_resolution(self):
         _, calls = self.quote(150, prompt="", model="retouch-inpaint-lab-nano-banana-pro",
                               resolution="4K", width=4096, height=4096, count=1)

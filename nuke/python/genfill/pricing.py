@@ -271,18 +271,19 @@ _balance_epoch = {}     # backend id -> bumped by forget_balance; older fetches 
 
 
 def snapshot(backend, model, quality, resolution, count, width, height, prompt, api_key,
-             auth=None):
+             auth=None, boxes=False):
     """Plain dict of everything a quote depends on (take it on the main thread).
 
     ``auth`` is :func:`auth_state` (computed from ``backend`` and ``api_key`` if omitted); it
-    is part of the cache key, so signing in or entering a key fetches a new quote.
+    is part of the cache key, so signing in or entering a key fetches a new quote. ``boxes``:
+    an enabled region box has text (with boxes an empty prompt is no erase, as in Generate).
     """
     if auth is None:
         auth = auth_state(backend, api_key)
     return {"backend": backend, "model": (model or "").strip(), "quality": quality or "auto",
             "resolution": resolution or "auto", "count": max(1, int(count or 1)),
             "width": int(width), "height": int(height), "prompt": prompt or "",
-            "api_key": api_key or "", "auth": auth}
+            "api_key": api_key or "", "auth": auth, "boxes": bool(boxes)}
 
 
 def auth_state(backend, api_key):
@@ -302,7 +303,7 @@ def key(snap):
     b = snap["backend"]
     return (getattr(b, "id", b), snap["model"], snap["quality"], snap["resolution"],
             snap["count"], snap["width"], snap["height"], bool(snap["prompt"].strip()),
-            snap.get("auth"))
+            snap.get("auth"), bool(snap.get("boxes")))
 
 
 def _fresh(entry, ttl, now):
@@ -340,12 +341,17 @@ def request(snap, now=None, threaded=True):
 
 def _fetch_quote(snap, k):
     from .backends.base import GenerationRequest
+    from .backends.layout import Box
     from .backends.oauth import LoginRequired
     entry = {"quote": None, "error": "", "login": False}
     try:
+        # A stand-in box: the backends pick erase or replace from the boxes like Generate.
+        boxes = ([Box(1, 0.0, 0.0, float(snap["width"]), float(snap["height"]), "region")]
+                 if snap.get("boxes") else [])
         req = GenerationRequest(None, None, None, snap["prompt"], snap["width"], snap["height"],
                                 count=snap["count"], model=snap["model"],
-                                quality=snap["quality"], resolution=snap["resolution"])
+                                quality=snap["quality"], resolution=snap["resolution"],
+                                boxes=boxes)
         entry["quote"] = snap["backend"].estimate(req, snap["api_key"])
     except LoginRequired as exc:
         entry.update(error=str(exc) or "not signed in", login=True)

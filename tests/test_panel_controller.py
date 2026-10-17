@@ -118,6 +118,15 @@ class BoxControllerTests(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
+    def test_cost_snapshot_knows_about_boxes_with_text(self):
+        self.assertFalse(self.ctl.cost_snapshot("")["boxes"])
+        self.ctl.add_box()
+        self.assertFalse(self.ctl.cost_snapshot("")["boxes"])      # no text: not sent
+        self.ctl.set_box_prompt(1, "a hat")
+        self.assertTrue(self.ctl.cost_snapshot("")["boxes"])
+        self.ctl.set_box_enabled(1, False)
+        self.assertFalse(self.ctl.cost_snapshot("")["boxes"])
+
     def test_add_edit_toggle_remove(self):
         self.assertEqual(self.ctl.boxes(), [])
         self.assertEqual(self.ctl.add_box(), 1)
