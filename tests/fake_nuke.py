@@ -194,6 +194,10 @@ class Node(object):
     def input(self, i):
         return self._inputs.get(i)
 
+    def inputs(self):
+        used = [i for i, n in self._inputs.items() if n is not None]
+        return max(used) + 1 if used else 0
+
     def name(self):
         return self._name
 

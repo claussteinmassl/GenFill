@@ -13,6 +13,9 @@ Two subgraphs follow the boxes and are rebuilt whenever one is added or removed
 * the overlay: per box a coloured outline (outer Rectangle stencilled by an inner Rectangle
   3 px smaller, areas linked to the Crop by expression) merged over the output, shown by the
   ``gf_box_overlay`` Switch in the interactive Viewer only;
+* the anchor: the ``gf_box_anchor`` Switch before the Output (fixed on input 0) takes every
+  box Crop as an extra input, so the Crops are upstream of the Output and Nuke draws their
+  handles in the Viewer;
 * the box mask: per box a filled Rectangle merged ``max`` into the selection matte, used by
   the ``gf_box_mask`` Switch when the boxes are the selection (set by the engine).
 
@@ -298,6 +301,13 @@ def rebuild_overlay(group):
                 chain = _merge("%sover%d" % (OVERLAY_PREFIX, n), "over", chain, ring, n,
                                col, 13)
             ov.setInput(1, chain)
+
+        anchor = group.node(gfnode.BOX_ANCHOR)
+        if anchor is not None:
+            for i in range(anchor.inputs() - 1, 0, -1):
+                anchor.setInput(i, None)
+            for i, (_n, crop) in enumerate(_box_nodes(group)):
+                anchor.setInput(i + 1, crop)
 
         bm = group.node(gfnode.BOX_MASK_SWITCH)
         if bm is not None:

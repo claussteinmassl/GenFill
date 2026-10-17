@@ -99,7 +99,7 @@ class BoxNodeTests(unittest.TestCase):
         sw = g.node(gfnode.BOX_OVERLAY)
         self.assertEqual(sw["which"].expression, "$gui && parent.gf_show_boxes")
         out = [c for c in g.nodes() if c.Class() == "Output"][0]
-        self.assertIs(out.input(0), sw)
+        self.assertIs(out.input(0).input(0), sw)          # through the anchor Switch
         self.assertIs(sw.input(0), g.node(gfnode.OUT_SWITCH))
         self.assertIs(sw.input(1), g.node(gfnode.OUT_SWITCH))      # no boxes: pass-through
         boxes.add_box(g, (0, 0, 10, 10))
@@ -128,6 +128,36 @@ class BoxNodeTests(unittest.TestCase):
         self.assertEqual(sw.input(1).name(), "gf_boxov_over2")
         self.assertIs(sw.input(1).input(0), g.node(gfnode.OUT_SWITCH))
         self.assertEqual(fake_nuke.EXPRESSION_ERRORS, [])
+
+    def test_anchor_puts_every_box_crop_upstream_of_the_output(self):
+        g = self.g
+        out = [c for c in g.nodes() if c.Class() == "Output"][0]
+        anchor = g.node(gfnode.BOX_ANCHOR)
+        self.assertIs(out.input(0), anchor)
+        self.assertIsNone(anchor["which"].expression)       # fixed, never expression-driven
+        self.assertEqual(int(anchor["which"].value()), 0)
+        self.assertIs(anchor.input(0), g.node(gfnode.BOX_OVERLAY))   # the image path
+        self.assertEqual(anchor.inputs(), 1)
+        for _ in range(3):
+            boxes.add_box(g, (0, 0, 10, 10))
+        self.assertEqual([anchor.input(i).name() for i in range(1, anchor.inputs())],
+                         ["GenFillBox1", "GenFillBox2", "GenFillBox3"])
+        boxes.remove_box(g, 2)
+        self.assertEqual([anchor.input(i).name() for i in range(1, anchor.inputs())],
+                         ["GenFillBox1", "GenFillBox3"])
+        self.assertIs(anchor.input(0), g.node(gfnode.BOX_OVERLAY))
+
+        def upstream(n, seen):
+            for i in range(n.inputs()):
+                up = n.input(i)
+                if up is not None and up not in seen:
+                    seen.add(up)
+                    upstream(up, seen)
+            return seen
+
+        ups = upstream(out, set())
+        for b in boxes.list_boxes(g):
+            self.assertIn(g.node(b.node_name), ups)
 
     def test_box_mask_is_merged_max_into_the_selection(self):
         g = self.g
@@ -189,6 +219,7 @@ class BoxNodeTests(unittest.TestCase):
         out = [c for c in g.nodes() if c.Class() == "Output"][0]
         with g:
             fake_nuke.delete(g.node(gfnode.BOX_OVERLAY))
+            fake_nuke.delete(g.node(gfnode.BOX_ANCHOR))
             fake_nuke.delete(g.node(gfnode.BOX_MASK_SWITCH))
         out.setInput(0, g.node(gfnode.OUT_SWITCH))
         g.node(gfnode.GROW).setInput(0, g.node(gfnode.SEL_SWITCH))
@@ -196,13 +227,30 @@ class BoxNodeTests(unittest.TestCase):
         self.assertTrue(gfnode.ensure_current(g))
         self.assertTrue(g["gf_show_boxes"].value())
         sw = g.node(gfnode.BOX_OVERLAY)
-        self.assertIs(out.input(0), sw)
+        anchor = g.node(gfnode.BOX_ANCHOR)
+        self.assertIs(out.input(0), anchor)
+        self.assertIs(anchor.input(0), sw)
+        self.assertEqual(anchor.inputs(), 1)
         self.assertIs(sw.input(0), g.node(gfnode.OUT_SWITCH))
         self.assertIs(sw.input(1), g.node(gfnode.OUT_SWITCH))
         bm = g.node(gfnode.BOX_MASK_SWITCH)
         self.assertIs(g.node(gfnode.GROW).input(0), bm)
         self.assertIs(bm.input(1), g.node(gfnode.SEL_SWITCH))
         self.assertEqual(fake_nuke.EXPRESSION_ERRORS, [])
+        self.assertFalse(gfnode.ensure_current(g))
+
+    def test_nodes_from_before_the_anchor_get_it(self):
+        g = self.g
+        out = [c for c in g.nodes() if c.Class() == "Output"][0]
+        boxes.add_box(g, (0, 0, 10, 10))
+        with g:
+            fake_nuke.delete(g.node(gfnode.BOX_ANCHOR))
+        out.setInput(0, g.node(gfnode.BOX_OVERLAY))
+        self.assertTrue(gfnode.ensure_current(g))
+        anchor = g.node(gfnode.BOX_ANCHOR)
+        self.assertIs(anchor.input(1), g.node("GenFillBox1"))
+        self.assertIs(out.input(0), anchor)
+        self.assertIs(anchor.input(0), g.node(gfnode.BOX_OVERLAY))
         self.assertFalse(gfnode.ensure_current(g))
 
 

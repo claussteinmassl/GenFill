@@ -24,8 +24,8 @@ Internal graph::
     (``$gui``); their filled union can replace an empty selection (box mask Switch after the
     selection Switch, driven by the engine)::
 
-    Switch ─┬──────────────────────────────── Switch(gf_box_overlay) ── Output
-            └─ Merge(over outline N) ... ─────┘
+    Switch ─┬──────────────────────────────── Switch(gf_box_overlay) ── Switch(gf_box_anchor) ── Output
+            └─ Merge(over outline N) ... ─────┘          GenFillBox<N> ─────┘ (inputs 1.., never shown)
     Switch(selection) ─┬─────────────────── Switch(gf_box_mask) ── Erode(grow) ...
                        └─ Merge(max box N) ──┘
 """
@@ -76,6 +76,7 @@ BLANK = "gf_layer_blank"
 LAYER = "gf_layer"
 BOX_OVERLAY = "gf_box_overlay"      # Switch: output, or output + box outlines ($gui only)
 BOX_MASK_SWITCH = "gf_box_mask"     # Switch: selection, or selection max filled boxes
+BOX_ANCHOR = "gf_box_anchor"        # Switch fixed on input 0; inputs 1.. = the box Crops
 BOX_OVERLAY_EXPR = "$gui && parent.gf_show_boxes"
 
 # The Writes every node has. Old nodes may also hold WRITE_SRC_F (disabled, never run).
@@ -468,9 +469,20 @@ def _output_node(group):
     return None
 
 
+def _box_switches_missing(group):
+    out = _output_node(group) is not None and group.node(OUT_SWITCH) is not None
+    return ((out and (group.node(BOX_OVERLAY) is None or group.node(BOX_ANCHOR) is None)) or
+            (group.node(BOX_MASK_SWITCH) is None and group.node(SEL_SWITCH) is not None
+             and group.node(GROW) is not None))
+
+
 def _build_box_switches(group):
-    """Insert the box overlay Switch before the Output and the box mask Switch after the
-    selection Switch. Both pass through until boxes exist (see boxes.rebuild_overlay)."""
+    """Insert the box overlay and anchor Switches before the Output and the box mask Switch
+    after the selection Switch. All pass through until boxes exist (see
+    boxes.rebuild_overlay).
+
+    The anchor Switch always outputs input 0; its other inputs are the box Crops, which makes
+    them upstream of the Output so Nuke draws their handles in the Viewer."""
     with group:
         out_sw = group.node(OUT_SWITCH)
         out = _output_node(group)
@@ -480,7 +492,18 @@ def _build_box_switches(group):
             ov.setInput(1, out_sw)
             ov["which"].setExpression(BOX_OVERLAY_EXPR)
             ov.setXYpos(out_sw.xpos(), out_sw.ypos() + 35)
-            out.setInput(0, ov)
+            anchor = group.node(BOX_ANCHOR)
+            (anchor if anchor is not None else out).setInput(0, ov)
+        if group.node(BOX_ANCHOR) is None and out is not None and out.input(0) is not None:
+            last = out.input(0)
+            anchor = nuke.nodes.Switch(name=BOX_ANCHOR)
+            anchor.setInput(0, last)
+            anchor["which"].setValue(0)
+            anchor.setXYpos(last.xpos(), last.ypos() + 35)
+            out.setInput(0, anchor)
+            from . import boxes          # boxes made before the anchor existed
+            for i, (_n, crop) in enumerate(boxes._box_nodes(group)):
+                anchor.setInput(i + 1, crop)
         sel = group.node(SEL_SWITCH)
         grow = group.node(GROW)
         if group.node(BOX_MASK_SWITCH) is None and sel is not None and grow is not None:
@@ -623,10 +646,7 @@ def ensure_current(group):
     if "gf_show_boxes" not in group.knobs():
         _add_show_boxes_knob(group)     # before the overlay Switch, whose expression reads it
         changed = True
-    if (group.node(BOX_OVERLAY) is None and group.node(OUT_SWITCH) is not None
-            and _output_node(group) is not None) or \
-            (group.node(BOX_MASK_SWITCH) is None and group.node(SEL_SWITCH) is not None
-             and group.node(GROW) is not None):
+    if _box_switches_missing(group):
         _build_box_switches(group)
         changed = True
     if "gf_transfer" in group.knobs():
