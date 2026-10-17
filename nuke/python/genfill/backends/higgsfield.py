@@ -59,7 +59,8 @@ _ALL = ("1K", "2K", "4K")
 
 
 def _spec(id, label, ratios, resolution="1k", quality=None, seed=False, note="",
-          role="image_references", mask=False, inpaint_flag=False, resolutions=None):
+          role="image_references", mask=False, inpaint_flag=False, resolutions=None,
+          layout=None):
     """One catalogue entry.
 
     Args:
@@ -70,13 +71,16 @@ def _spec(id, label, ratios, resolution="1k", quality=None, seed=False, note="",
         role: Media role of the reference image (differs per model).
         mask: Send the GenFill mask as a ``mask`` media; the model becomes ``kind="inpaint"``.
         inpaint_flag: The model also takes ``is_inpaint`` (sent as true with the mask).
+        layout: Region prompt style (``layout.STYLES``); None = none (guessed when discovered).
     """
     if resolutions is None:
         resolutions = ("1K",) if resolution else ()
+    extra = {"layout": layout} if layout else {}
     return ModelSpec(id, label, kind="inpaint" if mask else "edit", note=note,
                      ratios=list(ratios), resolution=resolution, resolutions=tuple(resolutions),
                      quality=quality, seed=seed,
-                     media_role=role, mask=bool(mask), inpaint_flag=bool(mask and inpaint_flag))
+                     media_role=role, mask=bool(mask), inpaint_flag=bool(mask and inpaint_flag),
+                     **extra)
 
 
 def _masked(**kw):
@@ -101,14 +105,14 @@ _CATALOGUE = (
     _spec("nano_banana", "Nano Banana", _CLASSIC, resolution=None),
     _spec("ideogram_4_5", "Ideogram 4.5", _IDEOGRAM, seed=True, resolutions=("1K", "2K"),
           quality={"low": "low", "medium": "medium", "high": "high"}, note="About 1 credit at low.",
-          **_masked()),
+          layout="ideogram", **_masked()),
     _spec("seedream_v5_pro", "Seedream 5 Pro", _SEEDREAM, resolutions=("1K", "2K")),
     _spec("seedream_5_0_flash", "Seedream 5 Flash", _SEEDREAM, resolutions=("1K", "2K")),
     _spec("seedream_v5_lite", "Seedream 5 Lite", _SEEDREAM_LITE, resolution=None),
     _spec("seedream_v4_5", "Seedream 4.5", _SEEDREAM, resolution=None),
     _spec("flux_kontext", "FLUX Kontext", _BASIC, resolution=None),
     _spec("flux_2", "FLUX.2", _BASIC, resolutions=("1K", "2K")),
-    _spec("flux_3_image", "FLUX.3", _FLUX3, resolutions=_ALL),
+    _spec("flux_3_image", "FLUX.3", _FLUX3, resolutions=_ALL, layout="flux3"),
     _spec("openai_hazel", "OpenAI Hazel", _HAZEL, resolution=None,
           quality={q: q for q in _QUALITY}),
     _spec("grok_image_2_0", "Grok Image 2.0", _GROK,
@@ -297,12 +301,18 @@ class HiggsfieldBackend(McpBackend):
                             cancelled, errors)
         return finish(images, errors, "Higgsfield")
 
-    @staticmethod
-    def _prompt(spec, request):
+    def _prompt(self, spec, request):
+        """The prompt sent, with region prompts (boxes) in the model's layout format."""
         text = request.prompt.strip()
+        boxes = self.sends_boxes(request, spec.id)
         if spec.extra.get("mask"):
-            return text + EDIT_PROMPT_SUFFIX if text else EDIT_EMPTY_PROMPT
-        return ref_prompt(text)
+            if text:
+                text += EDIT_PROMPT_SUFFIX
+            else:
+                text = EDIT_PROMPT_SUFFIX.strip() if boxes else EDIT_EMPTY_PROMPT
+        else:
+            text = ref_prompt(text, boxes)
+        return self.layout_prompt(request, text, spec.id)[0]
 
     # -- cost and balance ----------------------------------------------------
 

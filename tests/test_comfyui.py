@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python
 sys.path.insert(0, os.path.dirname(__file__))
 
 from genfill import config, pngio  # noqa: E402
-from genfill.backends import base, comfy_workflows, comfyui  # noqa: E402
+from genfill.backends import base, comfy_workflows, comfyui, layout  # noqa: E402
 from fake_servers import FakeComfyServer  # noqa: E402
 
 GRAPH = {
@@ -82,9 +82,43 @@ class ComfyUITests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.env):
             return self.backend.generate(request, api_key, **kw)
 
-    def request(self, prompt="a red car", count=2, model="fill", seed=100):
+    def request(self, prompt="a red car", count=2, model="fill", seed=100, boxes=None):
         return base.GenerationRequest(self.img, self.mask, self.mask_a, prompt, 8, 6,
-                                      seed=seed, count=count, model=model)
+                                      seed=seed, count=count, model=model, boxes=boxes)
+
+    # 8 x 6 request: box 1 left half, top half; box 2 right half, bottom half.
+    BOXES = [layout.Box(1, 0, 0, 4, 3, "a red umbrella"), layout.Box(2, 4, 3, 8, 6, "a dog")]
+
+    def test_layout_from_the_sidecar(self):
+        _write(self.wf_dir, "klein", GRAPH, {"label": "Klein", "layout": "flux3",
+                                             "empty_prompt": "erase"})
+        with mock.patch.dict(os.environ, {"GENFILL_COMFY_WORKFLOWS": self.wf_dir}):
+            self.assertEqual(self.backend.layout_style("klein"), "flux3")
+            self.assertIsNone(self.backend.layout_style("fill"))
+            self.assertIsNone(self.backend.layout_style("missing"))
+
+    def test_flux3_boxes_go_into_the_prompt_node(self):
+        _write(self.wf_dir, "klein", GRAPH, {"label": "Klein", "layout": "flux3",
+                                             "empty_prompt": "erase"})
+        fake = self.serve()
+        self.run_generate(self.request(model="klein", count=1, boxes=self.BOXES,
+                                       prompt="In <ref_image_0>, a street"))
+        self.assertEqual(
+            fake.prompts[0]["prompt"]["3"]["inputs"]["text"],
+            'In <ref_image_0>, a street\n'
+            '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
+            '{"id":"obj_2","bbox":[500,500,1000,1000],"desc":"a dog"}]')
+        # boxes with an empty prompt keep the layout workflow (no erase switch)
+        self.run_generate(self.request(model="klein", count=1, boxes=self.BOXES, prompt=""))
+        self.assertEqual(fake.prompts[1]["prompt"]["4"]["inputs"]["steps"], 20)
+        self.assertTrue(fake.prompts[1]["prompt"]["3"]["inputs"]["text"].startswith('[{"id"'))
+
+    def test_boxes_ignored_without_a_layout(self):
+        fake = self.serve()
+        self.run_generate(self.request(count=1, boxes=self.BOXES))
+        self.assertEqual(fake.prompts[0]["prompt"]["3"]["inputs"]["text"], "a red car")
+        self.run_generate(self.request(prompt="", count=1, boxes=self.BOXES))
+        self.assertEqual(fake.prompts[1]["prompt"]["4"]["inputs"]["steps"], 7)   # erase graph
 
     def test_generate_end_to_end(self):
         fake = self.serve()

@@ -22,10 +22,9 @@ import random
 import re
 import time
 
-from . import base
-from .base import (REF_EMPTY_PROMPT, REF_PROMPT_SUFFIX, Backend, BackendError, Cancelled,
-                   ModelSpec, tiers_from)
-from .cloud import collect, finish
+from . import base, layout
+from .base import Backend, BackendError, Cancelled, ModelSpec, tiers_from
+from .cloud import collect, finish, ref_prompt
 from .. import pngio, pricing, region
 
 QUEUE_ROOT = "https://queue.fal.run"
@@ -69,6 +68,9 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 #   resolution_field (None)     field that takes the tier ("resolution", "image_size") ...
 #   resolution_values ({})      ... with these values per tier ({"2K": "2K"}); overrides fixed
 #   min_pixels / max_pixels     pixel limits of a tier size; tier_max_side: longest side
+#   layout (None)               region prompt style (layout.STYLES): "flux3" / "ideogram" put
+#                               the boxes into the prompt, "flux3_fields" sends bounding_boxes
+#   expansion_field (None)      boolean prompt-expansion field, set False when Ideogram boxes go
 _ALL = ("1K", "2K", "4K")
 _FILL = ("1K", "2K")     # mask models answer at the input size; 4 MP is the safe ceiling
 _MASK = dict(image_field="image_url", mask_field="mask_url", count_field="num_images",
@@ -102,7 +104,7 @@ CATALOGUE = (
     ModelSpec("ideogram/v4.5/edit", "Ideogram 4.5 Edit", kind="inpaint", max_count=8,
               note="Newest Ideogram mask fill, good with text and graphics.",
               output_format=False, mask_invert=True, quality_field="quality",
-              max_pixels=2048 * 2048, **_MASK),
+              max_pixels=2048 * 2048, layout="ideogram", **_MASK),
     ModelSpec("openai/gpt-image-2/edit", "GPT Image 2 (fal)", kind="inpaint", max_count=4,
               note="Strong instruction following; mask edit.", **_GPT_EDIT),
     ModelSpec("openai/gpt-image-2.5/flare/edit", "GPT Image 2.5 Flare (fal)", kind="inpaint",
@@ -140,8 +142,13 @@ CATALOGUE = (
               **dict(_REF, **_NB_RES)),
     ModelSpec("blackforestlabs/flux-3/edit-image", "FLUX.3 Edit (reference edit)", kind="edit",
               max_count=1, note="Newest BFL edit model; one image per request.",
-              fixed={"resolution": "1k", "aspect_ratio": "auto"},
+              fixed={"resolution": "1k", "aspect_ratio": "auto"}, layout="flux3",
               **dict(_REF, **_res("resolution", {"1K": "1k", "2K": "2k", "4K": "4k"}))),
+    ModelSpec("blackforestlabs/flux-3/klein/edit-image", "FLUX.3 Klein Edit (reference edit)",
+              kind="edit", max_count=4, note="Fast BFL edit model; region boxes as a native "
+              "field.", count_field="num_images", seed_field="seed", size="obj",
+              resolutions=_ALL, max_pixels=4096 * 4096, tier_max_side=4096,
+              layout="flux3_fields", **_REF),
     ModelSpec("bytedance/seedream/v5/pro/edit", "Seedream 5 Pro Edit (reference edit)",
               kind="edit", max_count=6, note="Region-precise reference edit.",
               count_field="num_images", fixed={"image_size": "auto_1K"},
@@ -233,7 +240,7 @@ class FalBackend(Backend):
         keyless price notes in :mod:`pricing`; None (cost unknown) for unpriced models.
         fal has no balance API for normal keys."""
         spec = self.model_spec(request.model)
-        if not request.prompt.strip() and spec.erase:
+        if not request.prompt.strip() and spec.erase and not self.sends_boxes(request, spec.id):
             spec = self.model_spec(spec.erase)
         count = max(1, int(request.count))
         if api_key:
@@ -260,7 +267,7 @@ class FalBackend(Backend):
             raise BackendError("No fal.ai API key set (FAL_KEY or API Keys & Accounts...).")
         spec = self.model_spec(request.model)
         prompt = request.prompt.strip()
-        if not prompt and spec.erase:
+        if not prompt and spec.erase and not self.sends_boxes(request, spec.id):
             spec = self.model_spec(spec.erase)
         headers = {"Authorization": "Key %s" % api_key}
 
@@ -282,7 +289,8 @@ class FalBackend(Backend):
                     progress(0.1 + 0.1 * i / len(plan), "Submitting request %d of %d to %s..."
                              % (i + 1, len(plan), spec.id))
                 body = build_payload(spec, request, prompt, urls, n, seed,
-                                     tier=self.request_tier(request, spec.id))
+                                     tier=self.request_tier(request, spec.id),
+                                     style=self.layout_style(spec.id))
                 try:
                     jobs.append(self._submit(spec.id, body, headers))
                 except Cancelled:
@@ -415,6 +423,8 @@ _CANDIDATE = re.compile(r"edit|inpaint|fill|eras|remov")
 _NOT_A_FILL = re.compile(r"lora|gallery|background|image-editing/|image-apps|try-on|angles|"
                          r"upscal|relight|restor|restyle|coloriz|reseason|sketch|blend|expand|"
                          r"reframe|rewrite|text-removal|bbox|by_text|product")
+# Boolean prompt-expansion fields (turned off when Ideogram region boxes are sent).
+_EXPANSION = ("enable_prompt_expansion", "expand_prompt")
 # Input fields GenFill fills; an endpoint that requires anything else is skipped.
 _FILLED = ("prompt", "image_url", "image_urls", "mask_url", "mask_image_url")
 
@@ -609,6 +619,10 @@ def spec_from_openapi(model):
         extra["prompt_field"] = None
     if "negative_prompt" in props:
         extra["negative_field"] = "negative_prompt"
+    expansion = next((f for f in _EXPANSION if (props.get(f) or {}).get("type") == "boolean"),
+                     None)
+    if expansion:
+        extra["expansion_field"] = expansion
     max_count = 1
     count = props.get("num_images")
     if isinstance(count, dict):
@@ -680,12 +694,14 @@ def _plan(spec, request):
     return plan
 
 
-def build_payload(spec, request, prompt, urls, n, seed, tier="auto"):
+def build_payload(spec, request, prompt, urls, n, seed, tier="auto", style=None):
     """Request body for one queue call, read from the catalogue entry's ``extra``.
 
-    ``tier`` is the resolution tier to ask for (``auto`` keeps the catalogue's own value).
+    ``tier`` is the resolution tier to ask for (``auto`` keeps the catalogue's own value);
+    ``style`` the layout style that carries ``request.boxes`` (None: boxes are not sent).
     """
     x = spec.extra
+    boxes = layout.sends(style, request.boxes)
     image = urls["image"]
     if x.get("image_field", "image_urls") == "image_urls":
         images = [image]
@@ -697,14 +713,17 @@ def build_payload(spec, request, prompt, urls, n, seed, tier="auto"):
     if x.get("mask_field"):
         body[x["mask_field"]] = urls["mask"]
     pfield = x.get("prompt_field", "prompt")
+    fields = {}
     if spec.kind == "edit":
-        text = REF_EMPTY_PROMPT if not prompt else prompt + REF_PROMPT_SUFFIX
+        text = ref_prompt(prompt, boxes)
         if x.get("mask_as_image") and urls.get("mask"):
             text = MASK_NOTE + text
-        body["prompt"] = text
+        body["prompt"], fields = layout.apply(style, text, request.boxes, request.width,
+                                              request.height)
     elif pfield:
-        if prompt:
-            body[pfield] = prompt
+        if prompt or boxes:
+            body[pfield], fields = layout.apply(style, prompt, request.boxes, request.width,
+                                                request.height)
         elif x.get("prompt_required", True):
             body[pfield] = REMOVAL_PROMPT
     if x.get("negative_field") and request.negative_prompt:
@@ -727,6 +746,9 @@ def build_payload(spec, request, prompt, urls, n, seed, tier="auto"):
         body[x["resolution_field"]] = value
     if x.get("quality_field") and request.quality in ("low", "medium", "high"):
         body[x["quality_field"]] = request.quality
+    body.update(fields)
+    if boxes and style == "ideogram" and x.get("expansion_field"):
+        body[x["expansion_field"]] = False    # a rewritten JSON prompt may lose the boxes
     return body
 
 

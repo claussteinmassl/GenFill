@@ -2,6 +2,7 @@
 
 Run: python -m unittest tests.test_higgsfield -v
 """
+import json
 import os
 import sys
 import tempfile
@@ -12,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
-from genfill.backends import base, higgsfield  # noqa: E402
+from genfill.backends import base, higgsfield, layout  # noqa: E402
 from genfill.backends.base import BackendError, Cancelled, GenerationRequest  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
@@ -105,6 +106,51 @@ class HiggsfieldTests(unittest.TestCase):
         self.assertNotIn("seed", p)         # gpt_image_2_5 has no seed
         self.assertNotIn("mask", str(p))
         self.assertEqual(client.named("jobs_wait")[0]["timeout_seconds"], 15)
+
+    # ---- region prompts (boxes) ----
+    # 1168 x 880 request: box 1 top-left quarter, box 2 right half, lower three quarters.
+    BOXES = [layout.Box(1, 0, 0, 584, 440, "a red umbrella"),
+             layout.Box(2, 584, 220, 1168, 880, "a black dog")]
+
+    def test_layout_styles(self):
+        self.assertEqual(self.backend.layout_style("flux_3_image"), "flux3")
+        self.assertEqual(self.backend.layout_style("ideogram_4_5"), "ideogram")
+        self.assertIsNone(self.backend.layout_style("gpt_image_2_5"))
+        self.assertIsNone(self.backend.layout_style("flux_2"))
+
+    def test_flux3_boxes_in_the_prompt(self):
+        client = FakeClient([done("completed", "completed")])
+        self.run_generate(client, self.request(model="flux_3_image", boxes=self.BOXES,
+                                               prompt="In <ref_image_0>, a rainy street"))
+        for r in client.named("generate_image_batch")[0]["requests"]:
+            caption, rows = r["params"]["prompt"].split("\n")
+            self.assertEqual(caption, "In <ref_image_0>, a rainy street"
+                             + base.REF_PROMPT_SUFFIX)
+            self.assertEqual(rows, '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
+                                   '{"id":"obj_2","bbox":[250,500,1000,1000],'
+                                   '"desc":"a black dog"}]')
+
+    def test_ideogram_boxes_as_json_prompt(self):
+        client = FakeClient([done("completed")])
+        self.run_generate(client, self.request(model="ideogram_4_5", boxes=self.BOXES,
+                                               prompt="", count=1))
+        data = json.loads(client.named("generate_image_batch")[0]["requests"][0]["params"]
+                          ["prompt"])
+        self.assertEqual(data["high_level_description"], base.REF_PROMPT_SUFFIX.strip())
+        self.assertEqual([e["desc"] for e in data["compositional_deconstruction"]["elements"]],
+                         ["a red umbrella", "a black dog"])
+
+    def test_no_boxes_prompt_unchanged(self):
+        spec = self.backend.model_spec("flux_3_image")
+        for boxes in (None, []):
+            for model in ("flux_3_image", "ideogram_4_5", "gpt_image_2_5"):
+                req = self.request(model=model, boxes=boxes)
+                self.assertEqual(self.backend._prompt(self.backend.model_spec(model), req),
+                                 "a red car" + base.REF_PROMPT_SUFFIX)
+        req = self.request(model="gpt_image_2_5", boxes=self.BOXES)
+        self.assertEqual(self.backend._prompt(self.backend.model_spec("gpt_image_2_5"), req),
+                         "a red car" + base.REF_PROMPT_SUFFIX)
+        self.assertEqual(spec.extra["layout"], "flux3")
 
     def test_quality_and_seed(self):
         client = FakeClient([done("completed")])

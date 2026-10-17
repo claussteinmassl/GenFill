@@ -13,7 +13,7 @@ import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 
 from genfill import pngio  # noqa: E402
-from genfill.backends import base, fal  # noqa: E402
+from genfill.backends import base, fal, layout  # noqa: E402
 
 
 def _png(w=8, h=6, value=255):
@@ -117,11 +117,11 @@ class FalTests(unittest.TestCase):
             return fh.read()
 
     def run_fal(self, fake, prompt="a red door", count=1, model="", cancelled=None, seed=100,
-                quality="auto", negative="", resolution="auto", size=(8, 6)):
+                quality="auto", negative="", resolution="auto", size=(8, 6), boxes=None):
         req = base.GenerationRequest(self.paths["image"], self.paths["mask"], self.paths["mask"],
                                      prompt, size[0], size[1], seed=seed, count=count,
                                      model=model, negative_prompt=negative, quality=quality,
-                                     resolution=resolution)
+                                     resolution=resolution, boxes=boxes)
         with mock.patch.object(base, "http_request", fake):
             return self.backend.generate(req, "id:secret", cancelled=cancelled)
 
@@ -131,7 +131,7 @@ class FalTests(unittest.TestCase):
         b = self.backend
         self.assertEqual((b.id, b.label, b.env_var, b.needs_key, b.default_model),
                          ("fal", "fal.ai", "FAL_KEY", True, "fal-ai/flux-pro/v1/fill"))
-        self.assertEqual(len(b.catalogue), 20)
+        self.assertEqual(len(b.catalogue), 21)
         self.assertEqual(b.model_spec("").erase, "fal-ai/flux-pro/v1/erase")
 
     def test_submit_poll_result_and_cdn_upload(self):
@@ -318,6 +318,113 @@ class FalTests(unittest.TestCase):
         self.assertNotIn("seed", b)
         b, _ = self.body_for("bytedance/seedream/v5/pro/edit", count=1)
         self.assertEqual((b["image_size"], b["num_images"]), ("auto_1K", 1))
+
+    # ------------------------------------------------------- region prompts
+
+    # 1000 x 500 request: box 1 top-left quarter, box 2 right half, lower three quarters.
+    BOXES = [layout.Box(1, 0, 0, 500, 250, "a red umbrella"),
+             layout.Box(2, 500, 125, 1000, 500, "a black dog")]
+    ROWS = ('[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
+            '{"id":"obj_2","bbox":[250,500,1000,1000],"desc":"a black dog"}]')
+
+    def test_layout_styles(self):
+        b = self.backend
+        self.assertEqual(b.layout_style("blackforestlabs/flux-3/edit-image"), "flux3")
+        self.assertEqual(b.layout_style("blackforestlabs/flux-3/klein/edit-image"),
+                         "flux3_fields")
+        self.assertEqual(b.layout_style("ideogram/v4.5/edit"), "ideogram")
+        for mid in ("fal-ai/ideogram/v3/edit", "fal-ai/flux-pro/v1/fill"):
+            self.assertIsNone(b.layout_style(mid), mid)
+
+    def test_klein_edit_entry(self):
+        b, fake = self.body_for("blackforestlabs/flux-3/klein/edit-image", count=3, seed=9,
+                                size=(1000, 500))
+        self.assertTrue(fake.find("POST", "queue.fal.run/")[0]["url"]
+                        .endswith("/blackforestlabs/flux-3/klein/edit-image"))
+        self.assertEqual(len(b["image_urls"]), 2)       # crop + mask as second image
+        self.assertEqual((b["num_images"], b["seed"], b["output_format"]), (3, 9, "png"))
+        self.assertEqual(b["image_size"], {"width": 1000, "height": 500})
+        self.assertNotIn("bounding_boxes", b)
+        spec = self.backend.model_spec("blackforestlabs/flux-3/klein/edit-image")
+        self.assertEqual((spec.kind, spec.max_count), ("edit", 4))
+        self.assertEqual(self.backend.resolutions(spec.id), ("1K", "2K", "4K"))
+        w, h = self.backend.model_size(8000, 4000, spec.id, "4K")
+        self.assertLessEqual(max(w, h), 4096)
+        self.assertEqual((w % 16, h % 16), (0, 0))
+
+    def test_klein_sends_native_bounding_boxes(self):
+        prompt = "In <ref_image_0>, a rainy street with <obj_1> and <obj_2>"
+        b, _ = self.body_for("blackforestlabs/flux-3/klein/edit-image", prompt=prompt,
+                             size=(1000, 500), boxes=self.BOXES)
+        self.assertEqual(b["prompt"], fal.MASK_NOTE + prompt + base.REF_PROMPT_SUFFIX)
+        self.assertEqual(b["bounding_boxes"], [
+            {"label": "obj_1", "description": "a red umbrella",
+             "box": {"x_min": 0.0, "y_min": 0.0, "x_max": 0.5, "y_max": 0.5}},
+            {"label": "obj_2", "description": "a black dog",
+             "box": {"x_min": 0.5, "y_min": 0.25, "x_max": 1.0, "y_max": 1.0}}])
+        self.assertNotIn("enable_prompt_expansion", b)
+
+    def test_flux3_edit_boxes_in_the_prompt(self):
+        b, _ = self.body_for("blackforestlabs/flux-3/edit-image", prompt="In <ref_image_0>, x",
+                             size=(1000, 500), boxes=self.BOXES)
+        caption, rows = b["prompt"].split("\n")
+        self.assertEqual(caption, fal.MASK_NOTE + "In <ref_image_0>, x" + base.REF_PROMPT_SUFFIX)
+        self.assertEqual(rows, self.ROWS)
+        self.assertNotIn("bounding_boxes", b)
+
+    def test_ideogram_4_5_boxes_as_json_prompt(self):
+        b, fake = self.body_for("ideogram/v4.5/edit", prompt="", size=(1000, 500),
+                                boxes=self.BOXES)
+        self.assertTrue(fake.find("POST", "queue.fal.run/")[0]["url"]
+                        .endswith("/ideogram/v4.5/edit"))     # boxes: no removal prompt
+        data = json.loads(b["prompt"])
+        self.assertEqual(data["high_level_description"], "a red umbrella; a black dog")
+        self.assertEqual(data["compositional_deconstruction"]["elements"][1],
+                         {"type": "obj", "bbox": [250, 500, 1000, 1000], "desc": "a black dog"})
+
+    def test_boxes_turn_off_ideogram_prompt_expansion(self):
+        spec = base.ModelSpec("ideogram/v5/edit", "I", kind="inpaint", layout="ideogram",
+                              expansion_field="expand_prompt", fixed={"expand_prompt": True},
+                              **fal._MASK)
+        req = base.GenerationRequest(None, None, None, "p", 1000, 500, boxes=self.BOXES)
+        urls = {"image": "u1", "mask": "u2"}
+        body = fal.build_payload(spec, req, "p", urls, 1, 1, style="ideogram")
+        self.assertIs(body["expand_prompt"], False)
+        req.boxes = []
+        self.assertIs(fal.build_payload(spec, req, "p", urls, 1, 1, style="ideogram")
+                      ["expand_prompt"], True)
+
+    def test_discovered_expansion_field_and_layout(self):
+        props = {"prompt": {"type": "string"}, "image_url": {"type": "string"},
+                 "mask_url": {"type": "string"}, "enable_prompt_expansion": {"type": "boolean"}}
+        found = fal.spec_from_openapi({
+            "endpoint_id": "ideogram/v5/edit", "metadata": {"display_name": "Ideogram 5"},
+            "openapi": {"paths": {"/ideogram/v5/edit": {"post": {"requestBody": {"content": {
+                "application/json": {"schema": {"$ref": "#/components/schemas/In"}}}}}}},
+                "components": {"schemas": {"In": {"properties": props,
+                                                  "required": ["prompt", "image_url"]}}}}})
+        self.assertEqual(found.extra["expansion_field"], "enable_prompt_expansion")
+        self.assertNotIn("layout", found.extra)
+        found.discovered = True
+        with mock.patch.object(fal.FalBackend, "all_models", lambda s: [found]):
+            self.assertEqual(self.backend.layout_style("ideogram/v5/edit"), None)
+        found.id = "ideogram/v4.5/new-edit"
+        with mock.patch.object(fal.FalBackend, "all_models", lambda s: [found]):
+            self.assertEqual(self.backend.layout_style("ideogram/v4.5/new-edit"), "ideogram")
+
+    def test_no_boxes_payloads_unchanged(self):
+        for spec in self.backend.catalogue:
+            for prompt in ("a door", ""):
+                plain, _ = self.body_for(spec.id, prompt=prompt)
+                empty, _ = self.body_for(spec.id, prompt=prompt, boxes=[])
+                self.assertEqual(json.dumps(plain), json.dumps(empty), spec.id)
+        for mid in ("fal-ai/flux-pro/v1/fill", "fal-ai/nano-banana-pro/edit"):
+            plain, _ = self.body_for(mid)
+            boxed, _ = self.body_for(mid, boxes=self.BOXES)    # model without layout
+            self.assertEqual(json.dumps(plain), json.dumps(boxed), mid)
+        b, fake = self.body_for("", prompt="", boxes=self.BOXES)
+        self.assertTrue(fake.find("POST", "queue.fal.run/")[0]["url"]
+                        .endswith("/fal-ai/flux-pro/v1/erase"))
 
     def test_every_catalogue_entry_builds(self):
         for spec in self.backend.catalogue:

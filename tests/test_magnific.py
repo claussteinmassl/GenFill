@@ -2,6 +2,7 @@
 
 Run: python -m unittest tests.test_magnific -v
 """
+import json
 import os
 import sys
 import tempfile
@@ -13,7 +14,7 @@ import isolated_env  # noqa: E402,F401  (temp config dir, never ~/.nuke/genfill)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "nuke", "python"))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from genfill.backends import base, magnific  # noqa: E402
+from genfill.backends import base, layout, magnific  # noqa: E402
 from genfill.backends.magnific import MagnificBackend  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
@@ -205,6 +206,69 @@ class MagnificTests(unittest.TestCase):
         self.assertIn("a red door", args["prompt"])
         self.assertIn("exactly the same", args["prompt"])
         self.assertEqual(client.named("images_retouch"), [])
+
+    # ---- region prompts (boxes) ----
+    BOXES = [layout.Box(1, 0, 0, 512, 384, "a red umbrella"),
+             layout.Box(2, 512, 192, 1024, 768, "a black dog")]
+
+    def test_layout_styles(self):
+        b = self.backend
+        self.assertEqual(b.layout_style("flux-3-image"), "flux3")
+        for mid in ("ideogram-4-5", "retouch-ideogram-4-5", "retouch-precise-ideogram-4-5"):
+            self.assertEqual(b.layout_style(mid), "ideogram", mid)
+        for mid in ("retouch-auto", "flux-2", "gpt-2"):
+            self.assertIsNone(b.layout_style(mid), mid)
+
+    def test_flux3_edit_sends_boxes_in_the_prompt(self):
+        spec = self.backend.model_spec("flux-3-image")
+        req = self.request(model="flux-3-image", prompt="In <ref_image_0>, a rainy street",
+                           boxes=self.BOXES)
+        prompt = self.backend._edit_args(spec, req, "PLATE", 2)["prompt"]
+        caption, rows = prompt.split("\n")
+        self.assertEqual(caption, "In <ref_image_0>, a rainy street" + base.REF_PROMPT_SUFFIX)
+        self.assertEqual(rows, '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
+                               '{"id":"obj_2","bbox":[250,500,1000,1000],"desc":"a black dog"}]')
+
+    def test_ideogram_retouch_sends_a_json_prompt(self):
+        spec = self.backend.model_spec("retouch-ideogram-4-5")
+        req = self.request(model=spec.id, prompt="<obj_1> and <obj_2>", boxes=self.BOXES)
+        args = self.backend._retouch_args(spec, req, "PLATE", "MASK")
+        self.assertEqual(args["mode"], "replace")
+        data = json.loads(args["prompt"])
+        self.assertEqual(data["high_level_description"], "(a red umbrella) and (a black dog)")
+        self.assertEqual([e["bbox"] for e in data["compositional_deconstruction"]["elements"]],
+                         [[0, 0, 500, 500], [250, 500, 1000, 1000]])
+        # boxes with an empty main prompt are a replace, not an erase
+        args = self.backend._retouch_args(spec, self.request(model=spec.id, prompt="",
+                                                             boxes=self.BOXES))
+        self.assertEqual(args["mode"], "replace")
+        self.assertIn("a red umbrella; a black dog", args["prompt"])
+
+    def test_ideogram_edit_sends_a_json_prompt(self):
+        spec = self.backend.model_spec("ideogram-4-5")
+        req = self.request(model=spec.id, prompt="a street", boxes=self.BOXES)
+        data = json.loads(self.backend._edit_args(spec, req, "PLATE", 1)["prompt"])
+        self.assertEqual(data["high_level_description"], "a street" + base.REF_PROMPT_SUFFIX)
+        req = self.request(model=spec.id, prompt="", boxes=self.BOXES)
+        data = json.loads(self.backend._edit_args(spec, req, "PLATE", 1)["prompt"])
+        self.assertEqual(data["high_level_description"], base.REF_PROMPT_SUFFIX.strip())
+
+    def test_no_boxes_and_other_models_unchanged(self):
+        for mid in ("flux-3-image", "ideogram-4-5", "gpt-2"):
+            spec = self.backend.model_spec(mid)
+            plain = self.backend._edit_args(spec, self.request(model=mid), "PLATE", 2)
+            boxed = self.backend._edit_args(spec, self.request(model=mid, boxes=[]), "PLATE", 2)
+            self.assertEqual(json.dumps(plain), json.dumps(boxed))
+            self.assertEqual(plain["prompt"], "a red door" + base.REF_PROMPT_SUFFIX)
+        spec = self.backend.model_spec("gpt-2")
+        boxed = self.backend._edit_args(spec, self.request(model="gpt-2", boxes=self.BOXES),
+                                        "PLATE", 2)
+        self.assertEqual(boxed["prompt"], "a red door" + base.REF_PROMPT_SUFFIX)
+        spec = self.backend.model_spec("retouch-ideogram-4-5")
+        rargs = self.backend._retouch_args(spec, self.request(model=spec.id))
+        self.assertEqual(rargs["prompt"], "a red door")
+        rargs = self.backend._retouch_args(spec, self.request(model=spec.id, prompt=""))
+        self.assertEqual(rargs["mode"], "erase")
 
     def test_edit_model_aspect_ratio_and_zero_seed(self):
         tools = upload_tools({

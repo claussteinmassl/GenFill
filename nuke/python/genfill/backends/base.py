@@ -183,7 +183,7 @@ class Cancelled(BackendError):
 class GenerationRequest(object):
     def __init__(self, image_path, mask_path, mask_alpha_path, prompt, width, height,
                  seed=0, count=3, negative_prompt="", model="", quality="auto",
-                 resolution="auto"):
+                 resolution="auto", boxes=None):
         self.image_path = image_path          # sRGB 8-bit RGB PNG
         self.mask_path = mask_path            # white = fill, black = keep (RGB)
         self.mask_alpha_path = mask_alpha_path  # RGBA, alpha 0 = fill (OpenAI style)
@@ -196,6 +196,8 @@ class GenerationRequest(object):
         self.model = model or ""
         self.quality = quality or "auto"
         self.resolution = normalize_resolution(resolution)   # requested: auto, 1K, 2K, 4K
+        # Region prompts: layout.Box list in pixels of the image sent (width x height).
+        self.boxes = list(boxes or [])
 
     def read(self, attr):
         with open(getattr(self, attr), "rb") as fh:
@@ -209,8 +211,9 @@ class ModelSpec(object):
     comps it back through the selection); ``erase`` removes the masked content (empty prompt).
 
     Shared ``extra`` keys: ``resolutions`` (tuple of the processing tiers the model supports,
-    "1K"/"2K"/"4K"; ``()`` = fixed size; missing = the backend's ``default_resolutions``) and
-    ``max_pixels`` / ``min_pixels`` (the model's pixel limits for a tier).
+    "1K"/"2K"/"4K"; ``()`` = fixed size; missing = the backend's ``default_resolutions``),
+    ``max_pixels`` / ``min_pixels`` (the model's pixel limits for a tier) and ``layout`` (the
+    region prompt style, one of ``layout.STYLES``; missing = none, guessed for discovered ids).
     """
 
     def __init__(self, id, label, kind="inpaint", erase=None, max_count=4, note="", **extra):
@@ -274,6 +277,37 @@ class Backend(object):
     def adhoc_spec(self, model):
         """Spec for an id that is neither curated nor discovered (typed by the artist)."""
         return ModelSpec(model, model, kind="edit")
+
+    def layout_style(self, model=""):
+        """Region prompt style of ``model`` (``layout.STYLES``) or ``None`` (boxes not sent).
+
+        The catalogue entry's ``layout``; a discovered model without one is guessed from its
+        id (``flux-3`` -> ``flux3``, ``ideogram 4.5`` -> ``ideogram``).
+        """
+        spec = self.model_spec(model)
+        if spec is None:
+            return None
+        if "layout" in spec.extra:
+            return spec.extra["layout"]
+        if spec.discovered:
+            from . import layout
+            return layout.infer_style(spec.id)
+        return None
+
+    def sends_boxes(self, request, model=None):
+        """True if ``request.boxes`` go to ``model`` (it has a layout style and a box has text)."""
+        from . import layout
+        return layout.sends(self.layout_style(request.model if model is None else model),
+                            request.boxes)
+
+    def layout_prompt(self, request, prompt, model=None):
+        """``(prompt_text, extra_fields)`` of ``request.boxes`` for ``model`` (see layout.apply).
+
+        Without boxes, or for a model without a layout style, ``(prompt, {})``.
+        """
+        from . import layout
+        style = self.layout_style(request.model if model is None else model)
+        return layout.apply(style, prompt, request.boxes, request.width, request.height)
 
     # ``resolutions`` of models whose catalogue entry doesn't say (None = any size).
     default_resolutions = TIERS
