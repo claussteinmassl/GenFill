@@ -102,6 +102,17 @@ class VersionMenu(unittest.TestCase):
         self.assertTrue(combo.itemText(idx).startswith("  "))
         self.assertTrue(model.flags(model.index(idx, 0)) & Qt.ItemIsSelectable)
 
+    def test_typed_family_name_does_not_reset_the_model(self):
+        w = self._panel("Magnific")
+        combo = w.version
+        combo.setEditText("Google")                 # a family header's text
+        w._on_version_typed()
+        self.assertEqual(w.ctl.node["gf_model"].value(), "Google")
+        idx = combo.findData("imagen-nano-banana-2")
+        combo.setEditText(combo.itemText(idx).strip())   # a model label maps to its id
+        w._on_version_typed()
+        self.assertEqual(w.ctl.node["gf_model"].value(), "imagen-nano-banana-2")
+
     def test_single_family_backend_has_no_headers(self):
         combo = self._panel("Offline").version
         self.assertEqual([combo.itemText(i) for i in range(combo.count())
@@ -173,6 +184,18 @@ class RegionPrompts(unittest.TestCase):
         row.enabled.setChecked(True)
         info = self.boxes.list_boxes(self.g)[1]
         self.assertEqual((info.prompt, info.enabled), ("a kite", True))
+
+    def test_generate_commits_text_that_editing_finished_never_saved(self):
+        # macOS: clicking Generate does not take the focus, so no editingFinished fires.
+        rows = self._rows()
+        rows[0].edit.setText("a red umbrella")
+        rows[1].edit.setText("a black dog")
+        self.w.prompt.setText("rainy street")
+        seen = []
+        self.w.ctl.generate = lambda prompt=None: seen.append(
+            (self.g["gf_prompt"].value(), [b.prompt for b in self.boxes.list_boxes(self.g)]))
+        self.w._on_generate()
+        self.assertEqual(seen, [("rainy street", ["a red umbrella", "a black dog"])])
 
     def test_node_changes_show_up_but_not_over_a_focused_edit(self):
         self.w.show()

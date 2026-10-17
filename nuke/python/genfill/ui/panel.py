@@ -880,9 +880,11 @@ class GenFillPanel(QtWidgets.QWidget):
     def _on_version_typed(self, *args):
         """Free text: a displayed catalogue label maps back to its id."""
         text = self.version.currentText().strip()
-        idx = self.version.findText(text)
-        if idx < 0:     # a label shown indented under a family header
-            idx = self.version.findText(INDENT + text)
+        # A label as shown (also indented under a family header); headers (data None) are
+        # not models, so a typed family name stays the typed text.
+        idx = next((i for i in range(self.version.count())
+                    if self.version.itemText(i) in (text, INDENT + text)
+                    and self.version.itemData(i) is not None), -1)
         if idx >= 0:
             if self.version.itemData(idx) == REFRESH_ITEM:
                 self._show_version()
@@ -991,7 +993,11 @@ class GenFillPanel(QtWidgets.QWidget):
         if self.ctl.status().get("running"):
             self.ctl.cancel()
             return
+        # Commit every text field first: on macOS a click on Generate does not take the
+        # focus, so editingFinished of a box row being typed in never fires.
         self.ctl.set_prompt(self.prompt.text())
+        for n, row in list(self._box_rows.items()):
+            self.ctl.set_box_prompt(n, row.edit.text())
         self._discovery_note = ""
         # Immediate feedback: preparing the crop renders on the main thread.
         self._local_error = ""
