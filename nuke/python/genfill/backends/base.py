@@ -17,7 +17,7 @@ try:  # Python 3
 except ImportError:  # pragma: no cover - Python 2 Nuke is not supported
     raise
 
-USER_AGENT = "GenFill-Nuke/0.9"
+USER_AGENT = "GenFill-Nuke/0.10"
 
 
 # Prompts for models that re-render the whole crop (GenFill comps the result back through the

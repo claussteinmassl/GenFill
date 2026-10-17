@@ -273,6 +273,56 @@ Source ── GenerativeFill ── output
 Everything is stored per generation (region, frame, encoding, files), so selecting an older
 variation restores it exactly, even if you've changed the selection or color settings since.
 
+### Region prompts (bounding boxes)
+
+Some models (FLUX 3, Ideogram 4.5) read a *layout*: a list of boxes, each with its own
+description. GenFill's **Region prompts** section (under the prompt bar) lets you place those
+boxes in the Viewer.
+
+1. Press **+ Add box**. A box appears (the selection's bounds if there is one, otherwise the
+   centre of the frame) with a colour, a tag `<obj_1>`, and a text field.
+2. Drag the box in the Viewer with Nuke's Crop handles. Every box has its own colour (red,
+   green, blue, yellow, magenta, cyan, orange, violet, then again), and the handles are drawn in
+   that colour. In the interactive Viewer GenFill also draws a coloured outline per box over the
+   output; this overlay is never rendered and can be hidden with **show boxes in Viewer**.
+3. Type what goes into the box in its text field ("a red umbrella"). Untick a box to leave it
+   out, press x to delete it.
+4. Generate. The boxes are sent in the format each model reads; the main prompt can cite a box
+   as `<obj_1>` (click the tag button to insert it at the cursor): "a rainy street with
+   `<obj_1>` and `<obj_2>`". Box text describes the content, the main prompt describes the
+   scene and the relationship between boxes. Ideogram has no citation syntax, so GenFill
+   replaces a cited tag by the box text.
+
+Details:
+
+- **Boxes only.** With an empty selection, the enabled boxes are the selection (their union). The
+  crop widens to include every enabled box.
+- **Implicit box (FLUX 3).** Reference-edit FLUX 3 needs to know where to edit. Without boxes,
+  GenFill sends the selection's bounds as `<obj_1>` with your prompt as its description.
+- **Models.** The section is greyed out for other models (boxes are kept). Each generation
+  records the boxes it sent.
+- Boxes are animatable like any Crop; GenFill reads them on the reference frame.
+- Nuke stores each box as an internal `GenFillBox<N>` Crop with `gf_box_prompt` and
+  `gf_box_enabled` knobs. Nodes from before 0.10 are upgraded when opened.
+
+| Model | Where | Box format |
+|---|---|---|
+| FLUX 3 Image Klein (`flux3_klein`, `flux3_klein_upsampler`) | ComfyUI, local workflows | JSON rows in the prompt |
+| FLUX 3 Image (`api_flux3_image`) | ComfyUI, Comfy API workflow | JSON rows in the prompt |
+| FLUX 3 (`flux-3-image`), Ideogram 4.5 (`ideogram-4-5`, Retouch Ideogram 4.5) | Magnific | JSON rows (FLUX 3) / JSON prompt (Ideogram) |
+| FLUX 3 (`flux_3_image`), Ideogram 4.5 (`ideogram_4_5`) | Higgsfield | as above |
+| FLUX.3 Edit, Ideogram 4.5 Edit | fal.ai | as above |
+| FLUX.3 Klein Edit (`blackforestlabs/flux-3/klein/edit-image`) | fal.ai | native `bounding_boxes` field |
+
+**Verification status.** Verified live against the real services: Magnific `flux-3-image` with
+two boxes and Magnific `ideogram-4-5` with two boxes (both placed the content correctly).
+Local ComfyUI `flux3_klein`: <!-- KLEIN_LIVE -->
+**Unverified:** Higgsfield and fal.ai boxes (no key available for the test), the
+`api_flux3_image` Comfy API workflow (no Comfy.org key; it only passed ComfyUI's `/prompt`
+validation), and everything on the Nuke side (handle colours, the coloured overlay, the floating
+hidden Crop panels), because the development machine has no Nuke. Please report anything that
+looks wrong.
+
 ---
 
 ## Models
@@ -292,6 +342,11 @@ variation restores it exactly, even if you've changed the selection or color set
 
 The menu next to **Model** picks the model of the current cloud backend. *Default* (empty) uses
 the backend's default; you can also type any model id the provider accepts.
+
+The version menu groups models that belong together under a bold header (Google / Nano Banana,
+OpenAI / GPT Image, Black Forest Labs / FLUX, ByteDance / Seedream, Ideogram, ...). Headers
+cannot be selected; a backend whose models all belong to one family shows no headers. A
+ComfyUI workflow sets its group with `"family"` in its sidecar.
 
 - **Inpaint** models (and *erase* models for an empty prompt) change only the selection.
 - **Edit** models see only the crop and an instruction. They re-render the whole crop and

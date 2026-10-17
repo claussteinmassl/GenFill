@@ -150,6 +150,41 @@ backend's own budget (about 1 MP, the sizes before 0.9). For a tier:
   discovered specs (marked `discovered`, shown with "(new)") after the curated ones and relabels
   label collisions. Discovery never runs on Generate and never opens a browser.
 
+### Layout, boxes and families (0.10)
+
+- `backends/layout.py` (pure Python): `Box(n, x0, y0, x1, y1, prompt)` in the pixels of the image
+  sent, origin top-left. Formatters for the three styles in `STYLES`: `flux3` (prompt plus JSON
+  rows `{"id": "obj_N", "bbox": [y0, x0, y1, x1], "desc": ...}`, coordinates 0-1000, y first),
+  `flux3_fields` (fal Klein's native `bounding_boxes`, fractions, x first) and `ideogram` (JSON
+  prompt; `<obj_N>` tags replaced by the box text). `apply(style, prompt, boxes, w, h)` returns
+  the prompt text and extra payload fields; no boxes returns the prompt unchanged.
+- `Backend.layout_style(model)` reads the catalogue key `layout` (ComfyUI: the workflow sidecar;
+  discovered models are guessed from the id by `infer_style`). `GenerationRequest.boxes` carries
+  the boxes, and each backend sends them through `Backend.layout_prompt`. A backend that does
+  not support layouts ignores `request.boxes`.
+- `backends/families.py`: `family(model_id, label, explicit)` from an ordered regex table
+  (`ModelSpec.extra["family"]` wins) and `grouped(entries)`, which the panel's version menu uses
+  to insert non-selectable header rows.
+- `boxes.py` (Nuke-facing, tested against `tests/fake_nuke.py`): each box is an internal
+  `GenFillBox<N>` Crop (input Source, lowest free N) with `gf_box_prompt` / `gf_box_enabled`
+  knobs and a palette colour in `gl_color` and `tile_color`. `list_boxes`, `add_box`,
+  `remove_box`, `set_prompt`, `set_enabled`, `palette`, `rebuild_overlay`, `attach_box_tools`.
+- Internal nodes besides the Crops: `gf_box_overlay` (a Switch before the Output whose `which` is
+  `$gui && parent.gf_show_boxes`, so the coloured outlines, one `Rectangle` pair + `Merge2` per
+  box, never render), `gf_box_mask` (a Switch behind the selection: 0 = selection, 1 = selection
+  max the boxes' filled rectangles, driven by the engine) and, upstream of the Output, the box
+  Crops as extra inputs of a Switch fixed on input 0, so Nuke draws their handles. While the
+  panel is open, GenFill also opens each enabled box's Crop panel floating and hides the window,
+  as for the selection Roto. `ensure_current` upgrades old nodes.
+
+Data flow of boxes on Generate: the engine reads the enabled boxes with text at the reference
+frame (`list_boxes`), widens the region to the union of selection and boxes, uses the boxes as
+the selection when it is empty, converts them from plate coordinates (bottom-left) to crop pixels
+of the image sent (top-left, clipped; a box outside the crop is dropped with a note), adds the
+implicit `<obj_1>` for FLUX 3 when there are none, and puts them in `request.boxes`. The
+backend turns them into its format via `layout.apply`. The boxes are saved in the generation
+record (`"boxes"`) so the history shows what was sent.
+
 ## Cloud backends over MCP
 
 Magnific, Higgsfield and Comfy Cloud are reached through their remote MCP servers. GenFill is
