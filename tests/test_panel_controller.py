@@ -84,6 +84,16 @@ class ControllerTests(unittest.TestCase):
         self.assertNotEqual(self.ctl.signature(), connected)
         self.assertNotEqual(self.ctl.size_text(), hd_size)
 
+    def test_model_catalogue_entries_carry_the_family(self):
+        self.g["gf_backend"].setValue([l for l in gfnode.backend_labels() if "Magnific" in l][0])
+        default, entries = self.ctl.model_catalogue()
+        self.assertTrue(entries)
+        self.assertTrue(all(len(e) == 4 for e in entries))
+        fam = dict((e[0], e[3]) for e in entries)
+        self.assertEqual(fam["retouch-auto"], "Magnific")
+        self.assertEqual(fam["retouch-imagen-nano-banana-2"], "Google")
+        self.assertEqual(fam["seedream-5-pro"], "ByteDance")
+
     def test_cost_snapshot_uses_the_typed_prompt(self):
         self.g.setInput(0, nuke.nodes.Read(name="Plate"))
         self.g["gf_prompt"].setValue("")

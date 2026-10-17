@@ -15,6 +15,7 @@ import time
 
 from .qt import QtCore, QtGui, QtWidgets, Qt
 from . import style
+from ..backends import families
 
 def _safe(fn):
     """Qt swallows exceptions raised in slots; log them and show them instead."""
@@ -43,6 +44,7 @@ POLL_MS = 300
 COST_DEBOUNCE = 0.6     # seconds after a settings change before the cost is fetched
 AUTH_CHECK = 1.0        # seconds between checks for a sign-in or a new API key
 REFRESH_ITEM = "__genfill_refresh_models__"   # item data of the "Refresh model list" entry
+INDENT = "  "   # models sit two spaces in under their family header in the version menu
 
 
 # --------------------------------------------------------------------------
@@ -202,13 +204,16 @@ class NukeController(object):
             self.node["gf_model"].setValue(text)
 
     def model_catalogue(self):
-        """(default_model, [(id, label, note), ...]) of the current backend.
+        """(default_model, [(id, label, note, family), ...]) of the current backend.
 
-        Curated entries first, then live-discovered ones, labelled " (new)".
+        Curated entries first, then live-discovered ones, labelled " (new)". The family comes
+        from ``ModelSpec.extra["family"]`` or is inferred from id and label.
         """
+        from ..backends import families
         b = self._gfnode.backend_for(self.node)
         return b.default_model, [
-            (m.id, m.label + (" (new)" if getattr(m, "discovered", False) else ""), m.note)
+            (m.id, m.label + (" (new)" if getattr(m, "discovered", False) else ""), m.note,
+             families.family(m.id, m.label, m.extra.get("family", "")))
             for m in b.all_models()]
 
     def can_discover(self):
@@ -291,7 +296,7 @@ def sparkle_pixmap(size=16, color="#ffffff"):
     pm = QtGui.QPixmap(size * dpr, size * dpr)
     pm.fill(Qt.transparent)
     p = QtGui.QPainter(pm)
-    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.NoPen)
     p.setBrush(QtGui.QColor(color))
     s = size * dpr
@@ -698,6 +703,8 @@ class GenFillPanel(QtWidgets.QWidget):
         """Free text: a displayed catalogue label maps back to its id."""
         text = self.version.currentText().strip()
         idx = self.version.findText(text)
+        if idx < 0:     # a label shown indented under a family header
+            idx = self.version.findText(INDENT + text)
         if idx >= 0:
             if self.version.itemData(idx) == REFRESH_ITEM:
                 self._show_version()
@@ -739,7 +746,7 @@ class GenFillPanel(QtWidgets.QWidget):
         default, entries = self.ctl.model_catalogue()
         can, state = self._discovery()
         busy = bool(state.get("busy"))
-        key = (self.ctl.backend_label(), default, tuple(e[:2] for e in entries), can, busy)
+        key = (self.ctl.backend_label(), default, tuple(e[:2] + e[3:] for e in entries), can, busy)
         if key != self._version_backend:
             backend_changed = key[0] != self._version_label
             self._version_backend = key
@@ -747,8 +754,14 @@ class GenFillPanel(QtWidgets.QWidget):
             self.version.blockSignals(True)
             self.version.clear()
             self.version.addItem("Default (%s)" % default if default else "Default", "")
-            for mid, label, note in entries:
-                self.version.addItem(label, mid)
+            rows = families.grouped(entries)
+            headed = any(r[0] == "header" for r in rows)
+            for row in rows:
+                if row[0] == "header":
+                    self._add_family_header(row[1])
+                    continue
+                _, mid, label, note = row
+                self.version.addItem(INDENT + label if headed else label, mid)
                 if note:
                     self.version.setItemData(self.version.count() - 1, note, Qt.ToolTipRole)
             if can:
@@ -766,6 +779,15 @@ class GenFillPanel(QtWidgets.QWidget):
         if can:
             self._check_refresh_done(state)
         self._show_version()
+
+    def _add_family_header(self, name):
+        """A bold, disabled, non-selectable group heading in the version menu (data None)."""
+        self.version.addItem(name, None)
+        item = self.version.model().item(self.version.count() - 1)
+        item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+        font = QtGui.QFont(self.version.font())
+        font.setBold(True)
+        item.setFont(font)
 
     def _show_version(self, force=False):
         """Show the gf_model value in the combo (not while the artist types)."""
