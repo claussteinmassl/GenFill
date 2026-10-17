@@ -12,3 +12,9 @@
 - A provider's model schema can list inputs the server rejects (Higgsfield lists role "mask", the API
   answers "Unknown media role: mask"): verify with a free preflight (get_cost / simulate_cost) before
   enabling a request shape.
+
+## 2026-10-17 (region prompts)
+- Before a long local GPU live run, check swap (`sysctl vm.swapusage`) and start at a small size; a
+  1 MP FLUX 3 Klein run on a 24 GB Mac thrashed swap and hit GenFill's own timeout twice.
+- Look for existing tokens in the user's other tool configs (e.g. `~/.hermes/.env`) before asking;
+  the user said other sessions had used the HF token.
