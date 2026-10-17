@@ -252,16 +252,28 @@ def detach_box_tools(group):
 
 
 def _link_area(rect, n, inset=0):
+    """Link ``rect``'s area to box ``n``'s Crop, ``inset`` px smaller on every side.
+
+    An inset edge never passes the box centre, so the inner rectangle of a box smaller than
+    ``2 * inset`` collapses to a line instead of turning inside out.
+    """
     knob = rect["area"]
+    box = "%s.box" % node_name(n)
     for i, comp in enumerate("xyrt"):
-        expr = "%s.box.%s" % (node_name(n), comp)
+        expr = "%s.%s" % (box, comp)
         if inset:
-            expr += (" + %d" if i < 2 else " - %d") % inset
+            lo, hi = ("x", "r") if comp in "xr" else ("y", "t")
+            mid = "(%s.%s + %s.%s) / 2" % (box, lo, box, hi)
+            expr = ("min(%s + %d, %s)" if i < 2 else "max(%s - %d, %s)") % (expr, inset, mid)
         knob.setExpression(expr, i)
 
 
 def _rectangle(name, n, rgba, inset, col, row):
     rect = nuke.nodes.Rectangle(name=name)
+    # Explicit, so studio knob defaults cannot change the outlines or the box mask.
+    rect["output"].setValue("rgba")
+    rect["premult"].setValue("none")
+    rect["softness"].setValue(0)
     rect["color"].setValue(list(rgba))
     _link_area(rect, n, inset)
     rect.setXYpos(int(col * 140), int(row * 70))

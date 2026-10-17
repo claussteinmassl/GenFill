@@ -119,8 +119,28 @@ class BoxNodeTests(unittest.TestCase):
         self.assertEqual(outer["area"].expressions,
                          {0: "GenFillBox2.box.x", 1: "GenFillBox2.box.y",
                           2: "GenFillBox2.box.r", 3: "GenFillBox2.box.t"})
-        self.assertEqual(inner["area"].expressions[0], "GenFillBox2.box.x + 3")
-        self.assertEqual(inner["area"].expressions[3], "GenFillBox2.box.t - 3")
+        self.assertEqual(inner["area"].expressions[0],
+                         "min(GenFillBox2.box.x + 3, (GenFillBox2.box.x + GenFillBox2.box.r) / 2)")
+        self.assertEqual(inner["area"].expressions[3],
+                         "max(GenFillBox2.box.t - 3, (GenFillBox2.box.y + GenFillBox2.box.t) / 2)")
+
+        def area(rect, box):
+            """Evaluate the area expressions for a Crop box (x, y, r, t)."""
+            import re
+            values = dict(zip("xyrt", box))
+            return [eval(re.sub(r"GenFillBox2\.box\.([xyrt])",
+                                lambda m: str(values[m.group(1)]), e),
+                         {"min": min, "max": max})
+                    for e in (rect["area"].expressions[i] for i in range(4))]
+
+        self.assertEqual(area(inner, (100, 50, 200, 90)), [103, 53, 197, 87])
+        x, y, r, t = area(inner, (100, 50, 104, 52))         # smaller than 2 x OUTLINE
+        self.assertLessEqual(x, r)
+        self.assertLessEqual(y, t)
+        for rect in (outer, inner):
+            self.assertEqual(rect["output"].value(), "rgba")
+            self.assertEqual(rect["premult"].value(), "none")
+            self.assertEqual(rect["softness"].value(), 0)
         # Removing a box rebuilds the chain; nothing of box 1 is left behind.
         boxes.remove_box(g, 1)
         names = [c.name() for c in g.nodes()]
@@ -175,6 +195,7 @@ class BoxNodeTests(unittest.TestCase):
         rect = m.input(1)
         self.assertEqual(rect["color"].value(), [1.0, 1.0, 1.0, 1.0])
         self.assertEqual(rect["area"].expressions[2], "GenFillBox1.box.r")
+        self.assertEqual((rect["output"].value(), rect["softness"].value()), ("rgba", 0))
 
     def test_viewer_tools_open_hidden_floating_panels(self):
         boxes.add_box(self.g, (0, 0, 10, 10))
