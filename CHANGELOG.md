@@ -8,8 +8,9 @@
   Viewer*). Cite a box in the main prompt as `<obj_N>`. Boxes work with FLUX 3 and Ideogram 4.5
   on ComfyUI (local Klein workflows, Comfy API), Magnific, Higgsfield and fal.ai; other models
   grey the section out and keep the boxes. With an empty selection the boxes are the selection;
-  FLUX 3 gets the selection's bounds as an implicit `<obj_1>` when there are no boxes. Without
-  boxes every request is unchanged.
+  FLUX 3 gets the selection's bounds as an implicit `<obj_1>` when there are no boxes (so the
+  FLUX 3 models also send that box when the artist drew none). Without boxes every other request
+  is unchanged.
 - **FLUX 3 Image Klein on ComfyUI.** New workflows `flux3_klein`, `flux3_klein_upsampler` (with
   the BFL prompt upsampler) and `api_flux3_image` (Comfy API node). Reference edits, no mask
   node: the sidecar key `"mask": false` lets a workflow omit `GenFill Mask`. Needs ComfyUI 0.41
@@ -24,7 +25,7 @@
   the crop).
 - Fixed a PySide6 incompatibility in the panel (`QPainter.RenderHint.Antialiasing`).
 - **Verified live:** Magnific `flux-3-image` and `ideogram-4-5` with two boxes each (correct
-  placement). ComfyUI `flux3_klein`: <!-- KLEIN_LIVE -->
+  placement). ComfyUI `flux3_klein`: verified live on ComfyUI 0.41.3 (Apple M4, MPS) with two boxes at 592x448 (correct placement, 227 s)
 - **Unverified:** Higgsfield and fal.ai boxes (no key), the `api_flux3_image` workflow (no
   Comfy.org key; it only passed ComfyUI's `/prompt` validation), and Nuke-side behaviour (handle
   colours, the overlay, the floating hidden Crop panels): the development machine has no Nuke.

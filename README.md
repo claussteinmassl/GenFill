@@ -316,7 +316,7 @@ Details:
 
 **Verification status.** Verified live against the real services: Magnific `flux-3-image` with
 two boxes and Magnific `ideogram-4-5` with two boxes (both placed the content correctly).
-Local ComfyUI `flux3_klein`: <!-- KLEIN_LIVE -->
+Local ComfyUI `flux3_klein`: verified live on ComfyUI 0.41.3 (Apple M4, MPS) with two boxes at 592x448 (correct placement, 227 s)
 **Unverified:** Higgsfield and fal.ai boxes (no key available for the test), the
 `api_flux3_image` Comfy API workflow (no Comfy.org key; it only passed ComfyUI's `/prompt`
 validation), and everything on the Nuke side (handle colours, the coloured overlay, the floating

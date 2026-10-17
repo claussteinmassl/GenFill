@@ -88,3 +88,9 @@ license before production use.
 `api_flux3_image` needs no model files: it calls the Comfy API node FLUX 3 Image (Black Forest
 Labs) with the crop as reference image at 1K output and web grounding off, and bills your Comfy
 account.
+
+Speed: on an NVIDIA GPU a 1 MP Klein edit takes seconds. On Apple Silicon it is slow (an M4 with
+24 GB needs about 4 minutes at 0.25 MP and runs out of memory at 1 MP, past the 30 minute
+timeout); if a run stops with "Timed out waiting for ComfyUI", copy
+the workflow and its sidecar into your studio workflow folder (`GENFILL_COMFY_WORKFLOWS`) and
+raise `timeout` there (seconds; the shipped value is 1800).
