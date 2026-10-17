@@ -34,20 +34,27 @@ class Norm1000Tests(unittest.TestCase):
 
 
 class Flux3Tests(unittest.TestCase):
-    def test_rows_appended_compact(self):
-        text = layout.flux3_prompt("In <ref_image_0>, a rainy street", BOXES, 1000, 500)
+    def test_rows_appended_like_comfyui(self):
+        # Byte-identical to ComfyUI 0.41.3 Flux3LayoutPrompt:
+        # f"{prompt.rstrip()} {json.dumps(rows, ensure_ascii=False)}"
+        text = layout.flux3_prompt("In <ref_image_0>, a rainy street \n", BOXES, 1000, 500)
         self.assertEqual(
             text,
-            'In <ref_image_0>, a rainy street\n'
-            '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
-            '{"id":"obj_2","bbox":[250,500,1000,1000],"desc":"a black dog"}]')
+            'In <ref_image_0>, a rainy street '
+            '[{"id": "obj_1", "bbox": [0, 0, 500, 500], "desc": "a red umbrella"}, '
+            '{"id": "obj_2", "bbox": [250, 500, 1000, 1000], "desc": "a black dog"}]')
 
-    def test_empty_prompt_is_just_the_rows(self):
-        self.assertTrue(layout.flux3_prompt("", BOXES, 1000, 500).startswith('[{"id":"obj_1"'))
+    def test_non_ascii_text_is_kept(self):
+        text = layout.flux3_prompt(u"ein Kürbis", [Box(1, 0, 0, 10, 10, u"Kürbis")], 10, 10)
+        self.assertIn(u'"desc": "Kürbis"', text)
+        self.assertNotIn("\\u", text)
+
+    def test_empty_prompt_like_comfyui(self):
+        self.assertTrue(layout.flux3_prompt("", BOXES, 1000, 500).startswith(' [{"id": "obj_1"'))
 
     def test_ids_follow_box_numbers(self):
         text = layout.flux3_prompt("p", [Box(3, 0, 0, 10, 10, "c")], 10, 10)
-        self.assertEqual(json.loads(text.split("\n", 1)[1])[0]["id"], "obj_3")
+        self.assertEqual(json.loads(text.split(" ", 1)[1])[0]["id"], "obj_3")
 
     def test_fields_fractions_x_first(self):
         fields = layout.flux3_fields(BOXES, 1000, 500)
@@ -111,7 +118,7 @@ class ApplyTests(unittest.TestCase):
 
     def test_boxes_without_text_are_skipped(self):
         boxes = [Box(1, 0, 0, 5, 5, "  "), Box(2, 0, 0, 5, 5, "b")]
-        rows = json.loads(layout.flux3_prompt("p", boxes, 10, 10).split("\n")[1])
+        rows = json.loads(layout.flux3_prompt("p", boxes, 10, 10).split(" ", 1)[1])
         self.assertEqual([r["id"] for r in rows], ["obj_2"])
         self.assertEqual(layout.apply("flux3", "p", boxes[:1], 10, 10), ("p", {}))
 

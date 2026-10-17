@@ -324,8 +324,8 @@ class FalTests(unittest.TestCase):
     # 1000 x 500 request: box 1 top-left quarter, box 2 right half, lower three quarters.
     BOXES = [layout.Box(1, 0, 0, 500, 250, "a red umbrella"),
              layout.Box(2, 500, 125, 1000, 500, "a black dog")]
-    ROWS = ('[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
-            '{"id":"obj_2","bbox":[250,500,1000,1000],"desc":"a black dog"}]')
+    ROWS = ('[{"id": "obj_1", "bbox": [0, 0, 500, 500], "desc": "a red umbrella"}, '
+            '{"id": "obj_2", "bbox": [250, 500, 1000, 1000], "desc": "a black dog"}]')
 
     def test_layout_styles(self):
         b = self.backend
@@ -368,9 +368,9 @@ class FalTests(unittest.TestCase):
     def test_flux3_edit_boxes_in_the_prompt(self):
         b, _ = self.body_for("blackforestlabs/flux-3/edit-image", prompt="In <ref_image_0>, x",
                              size=(1000, 500), boxes=self.BOXES)
-        caption, rows = b["prompt"].split("\n")
+        caption, rows = b["prompt"].split(" [{", 1)
         self.assertEqual(caption, fal.MASK_NOTE + "In <ref_image_0>, x" + base.REF_PROMPT_SUFFIX)
-        self.assertEqual(rows, self.ROWS)
+        self.assertEqual("[{" + rows, self.ROWS)
         self.assertNotIn("bounding_boxes", b)
 
     def test_ideogram_4_5_boxes_as_json_prompt(self):

@@ -118,9 +118,11 @@ A "Region prompts" section under the main prompt:
 - `Box(n, x0, y0, x1, y1, prompt)`, `norm1000(box, w, h) -> [y0, x0, y1, x1]` ints 0-1000
   (round, clamp, y0<y1, x0<x1).
 - `STYLES = ("flux3", "flux3_fields", "ideogram")`.
-- `flux3_prompt(prompt, boxes, w, h)`: `prompt + "\n" + json.dumps([{"id": "obj_N",
-  "bbox": [y0,x0,y1,x1], "desc": box.prompt}, ...])` (compact separators, ids by box n).
-  Source: BFL layout prompting guide; `Flux3LayoutPrompt` in ComfyUI 0.41.3 produces the same.
+- `flux3_prompt(prompt, boxes, w, h)`: `f"{prompt.rstrip()} {json.dumps(rows, ensure_ascii=False)}"`
+  with rows `[{"id": "obj_N", "bbox": [y0,x0,y1,x1], "desc": box.prompt}, ...]` (a space before
+  the JSON, `json.dumps` default separators, non-ASCII kept, ids by box n). Byte-identical to
+  `Flux3LayoutPrompt` in ComfyUI 0.41.3 (`comfy_extras/nodes_flux.py`). Source: BFL layout
+  prompting guide.
 - `flux3_fields(boxes, w, h)`: fal FLUX 3 Klein native `bounding_boxes` list:
   `{"label": "obj_N", "description": text, "box": {"x_min","y_min","x_max","y_max"}}` fractions
   0-1, x first. Prompt cites `<obj_N>`.

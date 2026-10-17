@@ -123,12 +123,13 @@ class HiggsfieldTests(unittest.TestCase):
         self.run_generate(client, self.request(model="flux_3_image", boxes=self.BOXES,
                                                prompt="In <ref_image_0>, a rainy street"))
         for r in client.named("generate_image_batch")[0]["requests"]:
-            caption, rows = r["params"]["prompt"].split("\n")
+            caption, rows = r["params"]["prompt"].split(" [{", 1)
             self.assertEqual(caption, "In <ref_image_0>, a rainy street"
                              + base.REF_PROMPT_SUFFIX)
-            self.assertEqual(rows, '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
-                                   '{"id":"obj_2","bbox":[250,500,1000,1000],'
-                                   '"desc":"a black dog"}]')
+            self.assertEqual("[{" + rows,
+                             '[{"id": "obj_1", "bbox": [0, 0, 500, 500], "desc": "a red umbrella"}, '
+                             '{"id": "obj_2", "bbox": [250, 500, 1000, 1000], '
+                             '"desc": "a black dog"}]')
 
     def test_ideogram_boxes_as_json_prompt(self):
         client = FakeClient([done("completed")])

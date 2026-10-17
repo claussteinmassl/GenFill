@@ -105,13 +105,13 @@ class ComfyUITests(unittest.TestCase):
                                        prompt="In <ref_image_0>, a street"))
         self.assertEqual(
             fake.prompts[0]["prompt"]["3"]["inputs"]["text"],
-            'In <ref_image_0>, a street\n'
-            '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
-            '{"id":"obj_2","bbox":[500,500,1000,1000],"desc":"a dog"}]')
+            'In <ref_image_0>, a street '
+            '[{"id": "obj_1", "bbox": [0, 0, 500, 500], "desc": "a red umbrella"}, '
+            '{"id": "obj_2", "bbox": [500, 500, 1000, 1000], "desc": "a dog"}]')
         # boxes with an empty prompt keep the layout workflow (no erase switch)
         self.run_generate(self.request(model="klein", count=1, boxes=self.BOXES, prompt=""))
         self.assertEqual(fake.prompts[1]["prompt"]["4"]["inputs"]["steps"], 20)
-        self.assertTrue(fake.prompts[1]["prompt"]["3"]["inputs"]["text"].startswith('[{"id"'))
+        self.assertTrue(fake.prompts[1]["prompt"]["3"]["inputs"]["text"].startswith(' [{"id"'))
 
     def test_boxes_ignored_without_a_layout(self):
         fake = self.serve()

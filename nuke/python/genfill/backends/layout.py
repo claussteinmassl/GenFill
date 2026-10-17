@@ -3,10 +3,11 @@
 A :class:`Box` is one region of the image sent to the model, in its pixel coordinates (origin
 top-left), with its own text. Three styles:
 
-* ``flux3``: FLUX 3 layout prompt. The prompt, a newline, then a compact JSON list of rows
-  ``{"id": "obj_N", "bbox": [y0, x0, y1, x1], "desc": text}`` with 0-1000 coordinates, y first
-  (BFL layout prompting guide; ComfyUI's ``Flux3LayoutPrompt`` writes the same rows). The
-  prompt cites a box as ``<obj_N>``.
+* ``flux3``: FLUX 3 layout prompt. The prompt (trailing whitespace stripped), a space, then a
+  JSON list of rows ``{"id": "obj_N", "bbox": [y0, x0, y1, x1], "desc": text}`` with 0-1000
+  coordinates, y first, written like ComfyUI's ``Flux3LayoutPrompt`` (``json.dumps`` default
+  separators, non-ASCII kept; BFL layout prompting guide). The prompt cites a box as
+  ``<obj_N>``.
 * ``flux3_fields``: fal's FLUX 3 Klein native ``bounding_boxes`` field: ``{"label": "obj_N",
   "description": text, "box": {"x_min", "y_min", "x_max", "y_max"}}`` as fractions 0-1, x first.
 * ``ideogram``: Ideogram 4.5 JSON prompt (``high_level_description`` plus
@@ -73,13 +74,13 @@ def norm1000(box, width, height):
 
 
 def flux3_prompt(prompt, boxes, width, height):
-    """``prompt`` + newline + compact JSON rows ``{"id", "bbox", "desc"}`` (see module doc)."""
+    """``prompt`` + space + JSON rows ``{"id", "bbox", "desc"}``, as ComfyUI's
+    ``Flux3LayoutPrompt`` writes them (see module doc)."""
     rows = [{"id": _label(b), "bbox": norm1000(b, width, height), "desc": b.prompt.strip()}
             for b in _used(boxes)]
     if not rows:
         return prompt
-    rows = json.dumps(rows, separators=(",", ":"))
-    return prompt + "\n" + rows if prompt else rows
+    return "%s %s" % (prompt.rstrip(), json.dumps(rows, ensure_ascii=False))
 
 
 def flux3_fields(boxes, width, height):

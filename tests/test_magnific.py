@@ -224,10 +224,11 @@ class MagnificTests(unittest.TestCase):
         req = self.request(model="flux-3-image", prompt="In <ref_image_0>, a rainy street",
                            boxes=self.BOXES)
         prompt = self.backend._edit_args(spec, req, "PLATE", 2)["prompt"]
-        caption, rows = prompt.split("\n")
+        caption, rows = prompt.split(" [{", 1)
         self.assertEqual(caption, "In <ref_image_0>, a rainy street" + base.REF_PROMPT_SUFFIX)
-        self.assertEqual(rows, '[{"id":"obj_1","bbox":[0,0,500,500],"desc":"a red umbrella"},'
-                               '{"id":"obj_2","bbox":[250,500,1000,1000],"desc":"a black dog"}]')
+        self.assertEqual("[{" + rows,
+                         '[{"id": "obj_1", "bbox": [0, 0, 500, 500], "desc": "a red umbrella"}, '
+                         '{"id": "obj_2", "bbox": [250, 500, 1000, 1000], "desc": "a black dog"}]')
 
     def test_ideogram_retouch_sends_a_json_prompt(self):
         spec = self.backend.model_spec("retouch-ideogram-4-5")
