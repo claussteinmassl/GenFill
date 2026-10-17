@@ -2,7 +2,8 @@
 
 GenFill runs the API-format workflows of :mod:`comfy_workflows` in five steps:
 
-1. upload the plate crop and the mask to the server (``POST /upload/image``),
+1. upload the plate crop and the mask (if the workflow has a mask node) to the server
+   (``POST /upload/image``),
 2. queue one patched graph per variation (``POST /prompt``, seeds ``seed + i``),
 3. poll ``GET /history/<id>`` until every graph has finished,
 4. download the images of the output nodes (``GET /view``),
@@ -290,9 +291,11 @@ class ComfyUIBackend(Backend):
         uid = uuid.uuid4().hex[:12]
         image = client.upload(request.image_path, "%s_source.png" % uid)
         check()
-        if wf.mask_loader() == "LoadImage":
+        loader = wf.mask_loader()
+        mask = None                 # no GenFill Mask node (sidecar "mask": false)
+        if loader == "LoadImage":
             mask = client.upload(request.mask_alpha_path, "%s_mask_alpha.png" % uid)
-        else:
+        elif loader:
             mask = client.upload(request.mask_path, "%s_mask.png" % uid)
         check()
 

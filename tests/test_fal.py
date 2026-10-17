@@ -345,6 +345,7 @@ class FalTests(unittest.TestCase):
         self.assertEqual((b["num_images"], b["seed"], b["output_format"]), (3, 9, "png"))
         self.assertEqual(b["image_size"], {"width": 1000, "height": 500})
         self.assertNotIn("bounding_boxes", b)
+        self.assertNotIn("enable_prompt_expansion", b)       # fal default without boxes
         spec = self.backend.model_spec("blackforestlabs/flux-3/klein/edit-image")
         self.assertEqual((spec.kind, spec.max_count), ("edit", 4))
         self.assertEqual(self.backend.resolutions(spec.id), ("1K", "2K", "4K"))
@@ -362,7 +363,7 @@ class FalTests(unittest.TestCase):
              "box": {"x_min": 0.0, "y_min": 0.0, "x_max": 0.5, "y_max": 0.5}},
             {"label": "obj_2", "description": "a black dog",
              "box": {"x_min": 0.5, "y_min": 0.25, "x_max": 1.0, "y_max": 1.0}}])
-        self.assertNotIn("enable_prompt_expansion", b)
+        self.assertIs(b["enable_prompt_expansion"], False)   # an expansion may drop <obj_N>
 
     def test_flux3_edit_boxes_in_the_prompt(self):
         b, _ = self.body_for("blackforestlabs/flux-3/edit-image", prompt="In <ref_image_0>, x",

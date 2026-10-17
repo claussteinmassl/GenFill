@@ -88,6 +88,12 @@ class StaticTests(unittest.TestCase):
                                                   "medium", 1).amount, 0.06)
         self.assertIsNone(pricing.fal_static("ideogram/v4.5/edit", 1024, 1024, "auto", 1))
         self.assertIsNone(pricing.fal_static("fal-ai/flux-pro/v1/fill", 1024, 1024, "auto", 1))
+        klein = "blackforestlabs/flux-3/klein/edit-image"
+        for (w, h), price in (((1024, 1024), 0.009), ((2048, 2048), 0.014),
+                              ((4096, 4096), 0.036)):
+            quote = pricing.fal_static(klein, w, h, "auto", 2)
+            self.assertAlmostEqual(quote.amount, 2 * price, msg=w)
+            self.assertFalse(quote.exact)
         gpt = pricing.fal_static("openai/gpt-image-2/edit", 1024, 1024, "high", 1)
         self.assertEqual(gpt.unit, pricing.USD)
 

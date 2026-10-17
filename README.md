@@ -98,6 +98,8 @@ the folders of the ComfyUI that runs them (on RunPod: the pod's ComfyUI folder).
 | Workflow | Needs |
 |---|---|
 | `flux_fill`, `flux_fill_erase` (default `flux_fill`) | `flux1-fill-dev.safetensors` in `models/diffusion_models/`, `clip_l.safetensors` and `t5xxl_fp8_e4m3fn.safetensors` in `models/text_encoders/`, `ae.safetensors` in `models/vae/`. `flux1-fill-dev` is gated on Hugging Face (black-forest-labs/FLUX.1-Fill-dev): accept the license first. **Non-commercial license** |
+| `flux3_klein`, `flux3_klein_upsampler` (FLUX 3 Image Klein, reference edit, region boxes) | ComfyUI 0.41 or newer. `flux3-image-klein-int8-convrot.safetensors` in `models/diffusion_models/`, `qwen3vl_4b_int8_convrot.safetensors` in `models/text_encoders/`, `flux2-vae.safetensors` in `models/vae/`; the upsampler workflow also `qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors` in `models/text_encoders/`. All from Hugging Face black-forest-labs/flux-3-image-klein-comfy (gated: accept the license, approval is automatic). **FLUX Kommunity license**: non-commercial, or commercial below US$5M annual revenue; read the license |
+| `api_flux3_image` (FLUX 3 Image, reference edit, region boxes, 1K) | No model files; Comfy API node, bills your Comfy.org account like the row below |
 | `api_flux_pro_fill`, `api_flux_erase`, `api_bria_genfill`, `api_bria_eraser`, `api_recraft_inpaint` | No model files. These use Comfy API nodes (partner models) and bill your Comfy.org account: set `COMFY_API_KEY` (the same key as Comfy Cloud) or add it under API Keys & Accounts |
 
 #### Your own workflows
@@ -108,7 +110,7 @@ and drop it into a workflow folder. GenFill finds the nodes by title (case-insen
 | Node title | Node | Purpose |
 |---|---|---|
 | `GenFill Image` | `LoadImage` | the plate crop (required) |
-| `GenFill Mask` | `LoadImageMask` (channel red, white = fill) or `LoadImage` (mask from alpha) | the mask (required) |
+| `GenFill Mask` | `LoadImageMask` (channel red, white = fill) or `LoadImage` (mask from alpha) | the mask (required, unless the sidecar says `"mask": false`) |
 | `GenFill Prompt` | node with a `text` / `prompt` / `value` / `string` input | the prompt |
 | `GenFill Negative` | same | the negative prompt (optional) |
 | `GenFill Seed` | node with `seed` / `noise_seed` / `value` | without one, every `seed` / `noise_seed` input gets the seed |

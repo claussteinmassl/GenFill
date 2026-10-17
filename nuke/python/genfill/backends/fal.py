@@ -70,7 +70,8 @@ ERASE_MODEL = "fal-ai/flux-pro/v1/erase"
 #   min_pixels / max_pixels     pixel limits of a tier size; tier_max_side: longest side
 #   layout (None)               region prompt style (layout.STYLES): "flux3" / "ideogram" put
 #                               the boxes into the prompt, "flux3_fields" sends bounding_boxes
-#   expansion_field (None)      boolean prompt-expansion field, set False when Ideogram boxes go
+#   expansion_field (None)      boolean prompt-expansion field, set False when Ideogram or
+#                               native (flux3_fields) boxes go
 _ALL = ("1K", "2K", "4K")
 _FILL = ("1K", "2K")     # mask models answer at the input size; 4 MP is the safe ceiling
 _MASK = dict(image_field="image_url", mask_field="mask_url", count_field="num_images",
@@ -148,7 +149,7 @@ CATALOGUE = (
               kind="edit", max_count=4, note="Fast BFL edit model; region boxes as a native "
               "field.", count_field="num_images", seed_field="seed", size="obj",
               resolutions=_ALL, max_pixels=4096 * 4096, tier_max_side=4096,
-              layout="flux3_fields", **_REF),
+              layout="flux3_fields", expansion_field="enable_prompt_expansion", **_REF),
     ModelSpec("bytedance/seedream/v5/pro/edit", "Seedream 5 Pro Edit (reference edit)",
               kind="edit", max_count=6, note="Region-precise reference edit.",
               count_field="num_images", fixed={"image_size": "auto_1K"},
@@ -423,7 +424,7 @@ _CANDIDATE = re.compile(r"edit|inpaint|fill|eras|remov")
 _NOT_A_FILL = re.compile(r"lora|gallery|background|image-editing/|image-apps|try-on|angles|"
                          r"upscal|relight|restor|restyle|coloriz|reseason|sketch|blend|expand|"
                          r"reframe|rewrite|text-removal|bbox|by_text|product")
-# Boolean prompt-expansion fields (turned off when Ideogram region boxes are sent).
+# Boolean prompt-expansion fields (turned off when Ideogram or native region boxes are sent).
 _EXPANSION = ("enable_prompt_expansion", "expand_prompt")
 # Input fields GenFill fills; an endpoint that requires anything else is skipped.
 _FILLED = ("prompt", "image_url", "image_urls", "mask_url", "mask_image_url")
@@ -747,8 +748,8 @@ def build_payload(spec, request, prompt, urls, n, seed, tier="auto", style=None)
     if x.get("quality_field") and request.quality in ("low", "medium", "high"):
         body[x["quality_field"]] = request.quality
     body.update(fields)
-    if boxes and style == "ideogram" and x.get("expansion_field"):
-        body[x["expansion_field"]] = False    # a rewritten JSON prompt may lose the boxes
+    if boxes and style in ("ideogram", "flux3_fields") and x.get("expansion_field"):
+        body[x["expansion_field"]] = False    # a rewritten prompt may lose the boxes / <obj_N>
     return body
 
 

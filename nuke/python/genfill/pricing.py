@@ -172,9 +172,14 @@ def _fal_ideogram45(w, h, q):
     return {"low": 0.03, "medium": 0.06}.get(q)
 
 
-def _fal_tiered(low, high):
-    """``low`` up to about 1 MP, ``high`` above (1K vs 2K)."""
-    return lambda w, h, q: low if megapixels(w, h) <= 1.3 else high
+def _fal_tiered(low, high, top=None):
+    """``low`` up to about 1 MP, ``high`` above (1K vs 2K); ``top`` above about 4 MP (4K)."""
+    def price(w, h, q):
+        mp = megapixels(w, h)
+        if top is not None and mp > 4 * 1.3:
+            return top
+        return low if mp <= 1.3 else high
+    return price
 
 
 # USD per image from fal's keyless price notes (research §2), used when the pricing API with
@@ -190,6 +195,8 @@ FAL_PRICES = {
     "alibaba/qwen-image-3/edit": _fal_tiered(0.04, 0.075),
     "fal-ai/flux-2-pro/edit": _fal_mp(0.03, 0.015),
     "xai/grok-imagine-image/v2.0/edit": _fal_tiered(0.04, 0.08),
+    # BFL list prices (docs.bfl.ml FLUX 3 Image Klein), fal's planned price for the endpoint.
+    "blackforestlabs/flux-3/klein/edit-image": _fal_tiered(0.009, 0.014, 0.036),
 }
 # fal endpoints priced per token like OpenAI's API: endpoint -> OpenAI model id.
 FAL_TOKEN_MODELS = {

@@ -155,6 +155,18 @@ class ComfyUITests(unittest.TestCase):
         self.run_generate(self.request(model="alpha", count=1))
         self.assertTrue(fake.uploads[1][1].endswith("_mask_alpha.png"))
 
+    def test_no_mask_upload_without_a_mask_node(self):
+        graph = json.loads(json.dumps(GRAPH))
+        del graph["2"]
+        _write(self.wf_dir, "edit", graph, {"kind": "edit", "mask": False})
+        fake = self.serve()
+        self.run_generate(self.request(model="edit", count=1))
+        self.assertEqual(len(fake.uploads), 1)
+        self.assertTrue(fake.uploads[0][1].endswith("_source.png"))
+        g = fake.prompts[0]["prompt"]
+        self.assertEqual(g["1"]["inputs"]["image"], "genfill/" + fake.uploads[0][1])
+        self.assertNotIn("2", g)
+
     def test_token_header_and_api_key(self):
         fake = self.serve()
         self.run_generate(self.request(count=1), api_key="t")
