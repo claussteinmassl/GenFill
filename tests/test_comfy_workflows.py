@@ -79,6 +79,30 @@ class LoadTests(unittest.TestCase):
         self.assertIn("Export (API)", lib["ui"].error)
         self.assertTrue(lib["broken"].error)
 
+    def test_mask_false_sidecar_needs_no_mask_node(self):
+        g = dict(GRAPH)
+        del g["2"]
+        write(self.tmp, "edit", g, {"kind": "edit", "mask": False})
+        write(self.tmp, "nomask", g, {"kind": "edit"})
+        lib = cw.load_dir(self.tmp)
+        wf = lib["edit"]
+        self.assertEqual(wf.error, "")
+        self.assertFalse(wf.needs_mask)
+        self.assertTrue(lib["nomask"].needs_mask)
+        self.assertIn("GenFill Mask", lib["nomask"].error)
+        self.assertEqual(wf.mask_loader(), "")
+        graph, outputs = wf.patch("genfill/a.png", None, "a crate", "", 3)
+        self.assertEqual(graph["1"]["inputs"]["image"], "genfill/a.png")
+        self.assertEqual(graph["3"]["inputs"]["text"], "a crate")
+        self.assertEqual(outputs, ["5"])
+
+    def test_family_goes_into_the_spec(self):
+        write(self.tmp, "klein", GRAPH, {"family": "Black Forest Labs"})
+        write(self.tmp, "plain", GRAPH)
+        lib = cw.load_dir(self.tmp)
+        self.assertEqual(lib["klein"].spec().extra["family"], "Black Forest Labs")
+        self.assertNotIn("family", lib["plain"].spec().extra)
+
     def test_non_numeric_sidecar_values_are_listed_with_an_error(self):
         write(self.tmp, "slow", GRAPH, {"timeout": "abc"})
         write(self.tmp, "wide", GRAPH, {"pixels": "x", "label": "Wide"})
@@ -183,13 +207,109 @@ class ShippedTests(unittest.TestCase):
         for _, lib in self.libraries():
             for wid, wf in lib.items():
                 self.assertEqual(len(wf.nodes_titled(cw.T_IMAGE)), 1, wid)
-                self.assertEqual(len(wf.nodes_titled(cw.T_MASK)), 1, wid)
+                self.assertEqual(len(wf.nodes_titled(cw.T_MASK)), 1 if wf.needs_mask else 0,
+                                 wid)
 
     def test_erase_workflows_have_no_prompt_node(self):
         for _, lib in self.libraries():
             for wid, wf in lib.items():
                 if wf.kind == "erase":
                     self.assertEqual(wf.nodes_titled(cw.T_PROMPT), [], wid)
+
+
+class Flux3KleinTests(unittest.TestCase):
+    """The shipped FLUX 3 Klein / FLUX 3 Image workflows (spec section 4)."""
+
+    IDS = ("flux3_klein", "flux3_klein_upsampler", "api_flux3_image")
+
+    def setUp(self):
+        self.lib = cw.load_dir(SHIPPED_DIRS[0])
+
+    def node(self, wf, class_type):
+        ids = [nid for nid, n in wf.graph.items() if n["class_type"] == class_type]
+        self.assertEqual(len(ids), 1, class_type)
+        return wf.graph[ids[0]]
+
+    def test_sidecars(self):
+        for wid in self.IDS:
+            wf = self.lib[wid]
+            self.assertEqual(wf.error, "", wid)
+            self.assertEqual((wf.kind, wf.needs_mask, wf.meta.get("layout")),
+                             ("edit", False, "flux3"), wid)
+            self.assertEqual(wf.spec().extra["family"], "Black Forest Labs", wid)
+            self.assertIsNone(wf.empty_prompt, wid)
+            self.assertEqual(wf.api_nodes, wid.startswith("api_"), wid)
+            w, h = wf.model_size(3000, 2000)
+            self.assertEqual((w % 16, h % 16), (0, 0), wid)
+            self.assertLessEqual(w * h, 1048576 * 1.05, wid)
+        self.assertEqual(self.lib["flux3_klein"].resolutions(), ("1K", "2K", "4K"))
+        self.assertEqual(self.lib["api_flux3_image"].resolutions(), ("1K",))
+
+    def test_klein_graph(self):
+        for wid in ("flux3_klein", "flux3_klein_upsampler"):
+            wf = self.lib[wid]
+            image = wf.nodes_titled(cw.T_IMAGE)[0]
+            self.assertEqual(self.node(wf, "UNETLoader")["inputs"]["unet_name"],
+                             "flux3-image-klein-int8-convrot.safetensors")
+            ref = self.node(wf, "ReferenceMultiLatent")["inputs"]
+            self.assertEqual(ref["resolution"], "keep resolution")
+            self.assertEqual(ref["images.image0"], [image, 0])
+            seed = self.graph_node(wf, cw.T_SEED)
+            self.assertEqual(seed["class_type"], "KSampler")
+            self.assertEqual({k: seed["inputs"][k] for k in ("steps", "cfg", "sampler_name",
+                                                             "scheduler", "denoise")},
+                             {"steps": 16, "cfg": 1.0, "sampler_name": "euler",
+                              "scheduler": "simple", "denoise": 1.0})
+            self.assertEqual(self.graph_node(wf, cw.T_OUTPUT)["class_type"], "SaveImage")
+            graph, outputs = wf.patch("genfill/a.png", None, "a red door", "", 77)
+            self.assertEqual(graph[image]["inputs"]["image"], "genfill/a.png")
+            self.assertEqual(graph[wf.nodes_titled(cw.T_SEED)[0]]["inputs"]["seed"], 77)
+            self.assertEqual(outputs, wf.nodes_titled(cw.T_OUTPUT))
+        plain = self.lib["flux3_klein"]
+        self.assertEqual(self.graph_node(plain, cw.T_PROMPT)["class_type"], "CLIPTextEncode")
+        graph, _ = plain.patch("a", None, "a red door", "", 1)
+        self.assertEqual(graph[plain.nodes_titled(cw.T_PROMPT)[0]]["inputs"]["text"],
+                         "a red door")
+
+    def test_upsampler_graph(self):
+        wf = self.lib["flux3_klein_upsampler"]
+        prompt_id = wf.nodes_titled(cw.T_PROMPT)[0]
+        self.assertEqual(wf.graph[prompt_id]["class_type"], "PrimitiveStringMultiline")
+        gen = self.node(wf, "TextGenerate")["inputs"]
+        self.assertEqual(gen["prompt"], [prompt_id, 0])
+        self.assertEqual(gen["image"], [wf.nodes_titled(cw.T_IMAGE)[0], 0])
+        self.assertEqual(gen["sampling_mode"], "on")
+        system = wf.graph[gen["system_prompt"][0]]
+        self.assertEqual(system["class_type"], "PrimitiveStringMultiline")
+        self.assertTrue(system["inputs"]["value"].startswith(
+            "You are the prompt upsampler of an image-editing model."))
+        encode = self.node(wf, "CLIPTextEncode")["inputs"]
+        gen_id = next(n for n, v in wf.graph.items() if v["class_type"] == "TextGenerate")
+        self.assertEqual(encode["text"], [gen_id, 0])
+        loaders = sorted(n["inputs"]["clip_name"] for n in wf.graph.values()
+                         if n["class_type"] == "CLIPLoader")
+        self.assertEqual(loaders, ["qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors",
+                                   "qwen3vl_4b_int8_convrot.safetensors"])
+        graph, _ = wf.patch("a", None, "a red door", "", 1)
+        self.assertEqual(graph[prompt_id]["inputs"]["value"], "a red door")
+        self.assertEqual(graph[gen["system_prompt"][0]]["inputs"]["value"],
+                         system["inputs"]["value"])      # not patched
+
+    def test_api_flux3_graph(self):
+        wf = self.lib["api_flux3_image"]
+        node = self.graph_node(wf, cw.T_PROMPT)
+        self.assertEqual(node["class_type"], "Flux3ImageNode")
+        self.assertEqual(node["inputs"]["images.image_1"], [wf.nodes_titled(cw.T_IMAGE)[0], 0])
+        self.assertEqual(node["inputs"]["resolution"], "1K")
+        self.assertNotIn("bounding_boxes", node["inputs"])
+        graph, _ = wf.patch("a", None, "a red door", "", 5)
+        patched = graph[wf.nodes_titled(cw.T_PROMPT)[0]]["inputs"]
+        self.assertEqual((patched["prompt"], patched["seed"]), ("a red door", 5))
+
+    def graph_node(self, wf, title):
+        ids = wf.nodes_titled(title)
+        self.assertEqual(len(ids), 1, title)
+        return wf.graph[ids[0]]
 
 
 if __name__ == "__main__":

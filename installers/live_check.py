@@ -14,6 +14,11 @@ ComfyUI: the model is a workflow id, e.g. ``comfyui sdxl_inpaint --workflows tes
 ``--workflows DIR`` adds a workflow folder (sets ``GENFILL_COMFY_WORKFLOWS``); the server comes
 from ``GENFILL_COMFY_URL`` or the config (default http://127.0.0.1:8188).
 
+``--boxes "0.1,0.2,0.4,0.6:a red umbrella;0.5,0.5,0.9,0.9:a black dog"`` sends region prompts
+(fractions x0,y0,x1,y1 of the crop, origin top-left; cite them as <obj_1>, <obj_2> in --prompt)
+to models with a layout style (FLUX 3, Ideogram 4.5). Without --boxes, FLUX 3 models get the
+ball's mask bounds as the implicit box ``obj_1``, as in GenFill.
+
 ``--resolution 2K`` checks a processing tier: the synthetic plate region is then made as large
 as the tier (4:3), so the model gets the tier's size (or its own maximum) instead of 640x480.
 """
@@ -28,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "nuke", "python"))
 
 from genfill import backends, config, pngio, region  # noqa: E402
-from genfill.backends import base  # noqa: E402
+from genfill.backends import base, layout  # noqa: E402
 
 W, H = 640, 480
 BALL = (320, 260, 70)
@@ -61,6 +66,37 @@ def make_inputs(folder, width, height):
     return paths
 
 
+REF_PREFIX = "In <ref_image_0>, "    # same as genfill.engine.REF_PREFIX (engine needs Nuke)
+
+
+def parse_boxes(text, width, height):
+    """``"x0,y0,x1,y1:text;..."`` (fractions, origin top-left) -> [layout.Box] in pixels."""
+    found = []
+    for i, part in enumerate(p for p in (text or "").split(";") if p.strip()):
+        coords, _, desc = part.partition(":")
+        x0, y0, x1, y1 = [float(v) for v in coords.split(",")]
+        found.append(layout.Box(i + 1, x0 * width, y0 * height, x1 * width, y1 * height,
+                                desc.strip()))
+    return found
+
+
+def layout_prompt(style, prompt, boxes, width, height):
+    """The prompt and boxes GenFill's engine would send (see engine.layout_request)."""
+    if not style:
+        return prompt, []
+    text = prompt.strip()
+    if style.startswith("flux3") and not boxes and text:
+        cx, cy, r = (BALL[0] * width // W, BALL[1] * height // H, BALL[2] * width // W + 12)
+        boxes = [layout.Box(1, max(0, cx - r), max(0, cy - r), min(width, cx + r),
+                            min(height, cy + r), text)]
+        text += " <obj_1>"
+        if style == "flux3":
+            text = REF_PREFIX + text
+    elif style == "flux3" and boxes and text and "<ref_image_0>" not in text:
+        text = REF_PREFIX + text
+    return text, boxes
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("backend")
@@ -73,6 +109,8 @@ def main(argv=None):
                     help="extra ComfyUI workflow folder (sets GENFILL_COMFY_WORKFLOWS)")
     ap.add_argument("--resolution", default="auto", choices=list(base.RESOLUTIONS),
                     help="processing resolution (the Resolution setting); default auto")
+    ap.add_argument("--boxes", default="",
+                    help='region prompts "x0,y0,x1,y1:text;..." (fractions of the crop)')
     args = ap.parse_args(argv)
     if args.workflows:
         # config.comfyui_workflow_dirs() reads the variable on every call, so setting it here
@@ -89,9 +127,13 @@ def main(argv=None):
     plan = backend.size_plan(rw, rh, args.model, args.resolution)
     mw, mh = plan.width, plan.height
     paths = make_inputs(out, mw, mh)
+    style = backend.layout_style(args.model)
+    prompt, boxes = layout_prompt(style, args.prompt, parse_boxes(args.boxes, mw, mh), mw, mh)
     req = base.GenerationRequest(paths["source"], paths["mask"], paths["mask_alpha"],
-                                 args.prompt, mw, mh, seed=args.seed, count=args.count,
-                                 model=args.model, resolution=args.resolution)
+                                 prompt, mw, mh, seed=args.seed, count=args.count,
+                                 model=args.model, resolution=args.resolution, boxes=boxes)
+    if boxes:
+        print("layout %s: prompt %r, boxes %s" % (style, prompt, boxes))
     key = config.get_api_key(backend.id, backend.env_var)
     print("%s model=%r size=%dx%d (resolution %s: %s) prompt=%r count=%d key=%s" % (
         backend.id, args.model or backend.default_model, mw, mh, args.resolution, plan.text(),

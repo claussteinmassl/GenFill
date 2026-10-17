@@ -60,10 +60,16 @@ class McpBackend(Backend):
         return self.client(api_key, interactive=False)
 
 
-def ref_prompt(prompt):
-    """Prompt for a reference-edit model that never sees the mask."""
+def ref_prompt(prompt, boxes=False):
+    """Prompt for a reference-edit model that never sees the mask.
+
+    ``boxes``: region prompts go with it, so an empty prompt is no removal request (only the
+    "keep everything else" sentence is sent).
+    """
     prompt = (prompt or "").strip()
-    return REF_EMPTY_PROMPT if not prompt else prompt + REF_PROMPT_SUFFIX
+    if not prompt:
+        return REF_PROMPT_SUFFIX.strip() if boxes else REF_EMPTY_PROMPT
+    return prompt + REF_PROMPT_SUFFIX
 
 
 def put_bytes(url, data, content_type, headers=None, timeout=300):

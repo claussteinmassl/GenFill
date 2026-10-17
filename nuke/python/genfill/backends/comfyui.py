@@ -2,7 +2,8 @@
 
 GenFill runs the API-format workflows of :mod:`comfy_workflows` in five steps:
 
-1. upload the plate crop and the mask to the server (``POST /upload/image``),
+1. upload the plate crop and the mask (if the workflow has a mask node) to the server
+   (``POST /upload/image``),
 2. queue one patched graph per variation (``POST /prompt``, seeds ``seed + i``),
 3. poll ``GET /history/<id>`` until every graph has finished,
 4. download the images of the output nodes (``GET /view``),
@@ -228,6 +229,21 @@ class ComfyUIBackend(Backend):
             raise BackendError("ComfyUI workflow %r is not usable: %s" % (wid, wf.error))
         return wf
 
+    def layout_style(self, model=""):
+        """The workflow sidecar's ``layout`` (``"flux3"``: boxes go into ``GenFill Prompt``)."""
+        try:
+            return self.workflow(model).meta.get("layout") or None
+        except BackendError:
+            return None
+
+    def _pick(self, request):
+        """``(workflow, prompt_text)``: an empty prompt without boxes runs ``empty_prompt``."""
+        wf = self.workflow(request.model)
+        prompt, _ = self.layout_prompt(request, request.prompt, wf.id)
+        if not prompt.strip() and wf.empty_prompt:
+            wf = self.workflow(wf.empty_prompt)
+        return wf, prompt
+
     def resolutions(self, model=""):
         try:
             return self.workflow(model).resolutions()
@@ -246,9 +262,7 @@ class ComfyUIBackend(Backend):
     def estimate(self, request, api_key=""):
         """Free on your own GPU; a workflow with Comfy API nodes bills Comfy credits."""
         try:
-            wf = self.workflow(request.model)
-            if not request.prompt.strip() and wf.empty_prompt:
-                wf = self.workflow(wf.empty_prompt)
+            wf, _ = self._pick(request)
         except BackendError:
             return None
         if wf.api_nodes:
@@ -258,9 +272,7 @@ class ComfyUIBackend(Backend):
     # ---- generation ---------------------------------------------------------
     def generate(self, request, api_key, progress=None, cancelled=None):
         from .. import config
-        wf = self.workflow(request.model)
-        if not request.prompt.strip() and wf.empty_prompt:
-            wf = self.workflow(wf.empty_prompt)
+        wf, prompt = self._pick(request)
         comfy_key = ""
         if wf.api_nodes:
             comfy_key = config.get_api_key("comfy", COMFY_KEY_ENV)
@@ -279,9 +291,11 @@ class ComfyUIBackend(Backend):
         uid = uuid.uuid4().hex[:12]
         image = client.upload(request.image_path, "%s_source.png" % uid)
         check()
-        if wf.mask_loader() == "LoadImage":
+        loader = wf.mask_loader()
+        mask = None                 # no GenFill Mask node (sidecar "mask": false)
+        if loader == "LoadImage":
             mask = client.upload(request.mask_alpha_path, "%s_mask_alpha.png" % uid)
-        else:
+        elif loader:
             mask = client.upload(request.mask_path, "%s_mask.png" % uid)
         check()
 
@@ -292,7 +306,7 @@ class ComfyUIBackend(Backend):
                 check()
                 progress_step(progress, 0.05 + 0.05 * i / request.count,
                               "Queueing variation %d of %d..." % (i + 1, request.count))
-                graph, outputs = wf.patch(image, mask, request.prompt, request.negative_prompt,
+                graph, outputs = wf.patch(image, mask, prompt, request.negative_prompt,
                                           (base_seed + i) % MAX_SEED)
                 try:
                     jobs.append([client.queue_prompt(graph, comfy_key), outputs])

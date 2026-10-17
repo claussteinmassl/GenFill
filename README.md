@@ -44,7 +44,7 @@ Current version: **0.9.0** (see [CHANGELOG.md](CHANGELOG.md)).
 | Photoshop | GenFill in Nuke |
 |---|---|
 | Lasso / marquee selection | **✏ Draw Selection**: Roto shapes drawn on the node itself, with the shape list in the same panel. Or use any matte in the **Mask** input, or the Source alpha |
-| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Contextual task bar: prompt + **Generate** | The same bar at the top of the node's properties. Enter generates; Shift+Enter adds a line |
 | Empty prompt = remove and fill from surroundings | Same. ComfyUI: the workflow's erase partner (e.g. FLUX.1 Fill with a fixed empty-background prompt). Stability AI: their *Erase* model |
 | 3 variations per click, browse with ‹ › | Same: thumbnail grid of every generation (newest first), ‹ 1/6 › arrows; right-click to reuse a prompt, reveal or delete |
 | Generative layer with a layer mask | **output: Comp** (fill blended over the plate through the expanded, feathered selection) or **Layer** (just the fill, in the plate's format, premultiplied by that selection) |
@@ -98,6 +98,8 @@ the folders of the ComfyUI that runs them (on RunPod: the pod's ComfyUI folder).
 | Workflow | Needs |
 |---|---|
 | `flux_fill`, `flux_fill_erase` (default `flux_fill`) | `flux1-fill-dev.safetensors` in `models/diffusion_models/`, `clip_l.safetensors` and `t5xxl_fp8_e4m3fn.safetensors` in `models/text_encoders/`, `ae.safetensors` in `models/vae/`. `flux1-fill-dev` is gated on Hugging Face (black-forest-labs/FLUX.1-Fill-dev): accept the license first. **Non-commercial license** |
+| `flux3_klein`, `flux3_klein_upsampler` (FLUX 3 Image Klein, reference edit, region boxes) | ComfyUI 0.41 or newer. `flux3-image-klein-int8-convrot.safetensors` in `models/diffusion_models/`, `qwen3vl_4b_int8_convrot.safetensors` in `models/text_encoders/`, `flux2-vae.safetensors` in `models/vae/`; the upsampler workflow also `qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors` in `models/text_encoders/`. All from Hugging Face black-forest-labs/flux-3-image-klein-comfy (gated: accept the license, approval is automatic). **FLUX Kommunity license**: non-commercial, or commercial below US$5M annual revenue; read the license |
+| `api_flux3_image` (FLUX 3 Image, reference edit, region boxes, 1K) | No model files; Comfy API node, bills your Comfy.org account like the row below |
 | `api_flux_pro_fill`, `api_flux_erase`, `api_bria_genfill`, `api_bria_eraser`, `api_recraft_inpaint` | No model files. These use Comfy API nodes (partner models) and bill your Comfy.org account: set `COMFY_API_KEY` (the same key as Comfy Cloud) or add it under API Keys & Accounts |
 
 #### Your own workflows
@@ -108,7 +110,7 @@ and drop it into a workflow folder. GenFill finds the nodes by title (case-insen
 | Node title | Node | Purpose |
 |---|---|---|
 | `GenFill Image` | `LoadImage` | the plate crop (required) |
-| `GenFill Mask` | `LoadImageMask` (channel red, white = fill) or `LoadImage` (mask from alpha) | the mask (required) |
+| `GenFill Mask` | `LoadImageMask` (channel red, white = fill) or `LoadImage` (mask from alpha) | the mask (required, unless the sidecar says `"mask": false`) |
 | `GenFill Prompt` | node with a `text` / `prompt` / `value` / `string` input | the prompt |
 | `GenFill Negative` | same | the negative prompt (optional) |
 | `GenFill Seed` | node with `seed` / `noise_seed` / `value` | without one, every `seed` / `noise_seed` input gets the seed |
@@ -199,7 +201,7 @@ shows which build is loaded.
 2. With its panel open, the Roto tools are in the Viewer. Draw around what you want to replace.
    Edit, toggle or animate shapes in the **shapes** list right in the panel.
 3. Type a prompt (*"a weathered wooden bench"*) or leave it empty to remove the object. Press
-   **Generate** (or Ctrl+Enter, Cmd+Enter on macOS; Enter adds a line).
+   **Generate** (or Enter; Shift+Enter adds a line).
 4. Click thumbnails or use ‹ › to pick a variation. Generate again to add more.
 5. Adjust **expand** / **feather** to blend, and set **output** to *Comp* or *Layer*.
 
@@ -223,7 +225,7 @@ Source ── GenerativeFill ── output
 
 | Control | Meaning |
 |---|---|
-| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Ctrl+Enter (Cmd+Enter on macOS) generates; Enter adds a line |
+| Prompt bar + **Generate** | What to generate. Empty = remove. Multi-line (3 lines, grows to 8). Enter generates; Shift+Enter adds a line |
 | Model menu | Backend picker (ComfyUI, cloud providers), and the version menu with the backend's models. *Refresh model list…* at its end fetches the provider's newest models (see [Newer models](#newer-models-discovery)) |
 | Quality / Resolution | The *quality* and *resolution* knobs, plus the size the next Generate sends ("sends 2048 × 1152 (2K)", estimated from the last selection or the plate) |
 | Cost line (under Generate) | What the next Generate costs with the current model, resolution, quality and number of variations, plus the credit balance where the provider has one: "30 credits for 3 · balance 243,317 (Premium+)", "≈ $0.58 for 3", "free (your GPU)". "≈" marks an estimate. See [Costs and balance](#costs-and-balance) |
@@ -271,6 +273,56 @@ Source ── GenerativeFill ── output
 Everything is stored per generation (region, frame, encoding, files), so selecting an older
 variation restores it exactly, even if you've changed the selection or color settings since.
 
+### Region prompts (bounding boxes)
+
+Some models (FLUX 3, Ideogram 4.5) read a *layout*: a list of boxes, each with its own
+description. GenFill's **Region prompts** section (under the prompt bar) lets you place those
+boxes in the Viewer.
+
+1. Press **+ Add box**. A box appears (the selection's bounds if there is one, otherwise the
+   centre of the frame) with a colour, a tag `<obj_1>`, and a text field.
+2. Drag the box in the Viewer with Nuke's Crop handles. Every box has its own colour (red,
+   green, blue, yellow, magenta, cyan, orange, violet, then again), and the handles are drawn in
+   that colour. In the interactive Viewer GenFill also draws a coloured outline per box over the
+   output; this overlay is never rendered and can be hidden with **show boxes in Viewer**.
+3. Type what goes into the box in its text field ("a red umbrella"). Untick a box to leave it
+   out, press x to delete it.
+4. Generate. The boxes are sent in the format each model reads; the main prompt can cite a box
+   as `<obj_1>` (click the tag button to insert it at the cursor): "a rainy street with
+   `<obj_1>` and `<obj_2>`". Box text describes the content, the main prompt describes the
+   scene and the relationship between boxes. Ideogram has no citation syntax, so GenFill
+   replaces a cited tag by the box text.
+
+Details:
+
+- **Boxes only.** With an empty selection, the enabled boxes are the selection (their union). The
+  crop widens to include every enabled box.
+- **Implicit box (FLUX 3).** Reference-edit FLUX 3 needs to know where to edit. Without boxes,
+  GenFill sends the selection's bounds as `<obj_1>` with your prompt as its description.
+- **Models.** The section is greyed out for other models (boxes are kept). Each generation
+  records the boxes it sent.
+- Boxes are animatable like any Crop; GenFill reads them on the reference frame.
+- Nuke stores each box as an internal `GenFillBox<N>` Crop with `gf_box_prompt` and
+  `gf_box_enabled` knobs. Nodes from before 0.10 are upgraded when opened.
+
+| Model | Where | Box format |
+|---|---|---|
+| FLUX 3 Image Klein (`flux3_klein`, `flux3_klein_upsampler`) | ComfyUI, local workflows | JSON rows in the prompt |
+| FLUX 3 Image (`api_flux3_image`) | ComfyUI, Comfy API workflow | JSON rows in the prompt |
+| FLUX 3 (`flux-3-image`), Ideogram 4.5 (`ideogram-4-5`, Retouch Ideogram 4.5) | Magnific | JSON rows (FLUX 3) / JSON prompt (Ideogram) |
+| FLUX 3 (`flux_3_image`), Ideogram 4.5 (`ideogram_4_5`) | Higgsfield | as above |
+| FLUX.3 Edit, Ideogram 4.5 Edit | fal.ai | as above |
+| FLUX.3 Klein Edit (`blackforestlabs/flux-3/klein/edit-image`) | fal.ai | native `bounding_boxes` field |
+
+**Verification status.** Verified live against the real services: Magnific `flux-3-image` with
+two boxes and Magnific `ideogram-4-5` with two boxes (both placed the content correctly).
+Local ComfyUI `flux3_klein`: verified live on ComfyUI 0.41.3 (Apple M4, MPS) with two boxes at 592x448 (correct placement, 227 s)
+**Unverified:** Higgsfield and fal.ai boxes (no key available for the test), the
+`api_flux3_image` Comfy API workflow (no Comfy.org key; it only passed ComfyUI's `/prompt`
+validation), and everything on the Nuke side (handle colours, the coloured overlay, the floating
+hidden Crop panels), because the development machine has no Nuke. Please report anything that
+looks wrong.
+
 ---
 
 ## Models
@@ -290,6 +342,11 @@ variation restores it exactly, even if you've changed the selection or color set
 
 The menu next to **Model** picks the model of the current cloud backend. *Default* (empty) uses
 the backend's default; you can also type any model id the provider accepts.
+
+The version menu groups models that belong together under a bold header (Google / Nano Banana,
+OpenAI / GPT Image, Black Forest Labs / FLUX, ByteDance / Seedream, Ideogram, ...). Headers
+cannot be selected; a backend whose models all belong to one family shows no headers. A
+ComfyUI workflow sets its group with `"family"` in its sidecar.
 
 - **Inpaint** models (and *erase* models for an empty prompt) change only the selection.
 - **Edit** models see only the crop and an instruction. They re-render the whole crop and

@@ -97,9 +97,10 @@ CATALOGUE = (
              note=BETA_NOTE),
     _retouch("retouch-precise-nano-banana-pro", "Retouch Nano Banana Pro Precise (beta)",
              note=BETA_NOTE),
-    _retouch("retouch-ideogram-4-5", "Retouch Ideogram 4.5 (beta)", note=BETA_NOTE),
+    _retouch("retouch-ideogram-4-5", "Retouch Ideogram 4.5 (beta)", note=BETA_NOTE,
+             layout="ideogram"),
     _retouch("retouch-precise-ideogram-4-5", "Retouch Ideogram 4.5 Precise (beta)",
-             note=BETA_NOTE),
+             note=BETA_NOTE, layout="ideogram"),
     _retouch("retouch-erase", "Retouch Erase (erase only)", erase_only=True),
     # Edit: images_generate with the crop as an image reference.
     _edit("seedream-5-pro", "Seedream 5 Pro", custom_size=True, resolution="1.5k",
@@ -120,7 +121,7 @@ CATALOGUE = (
     _edit("gpt-2", "GPT 2", custom_size=True, resolution="1k", quality=_QUALITY,
           resolutions=_ALL),
     _edit("ideogram-4-5", "Ideogram 4.5 (beta)", quality=_QUALITY, ratios=_IDEOGRAM45_RATIOS,
-          note=BETA_NOTE),
+          note=BETA_NOTE, layout="ideogram"),
     _edit("flux-kontext", "Flux.1 Kontext Pro"),
     _edit("flux-kontext-high", "Flux.1 Kontext Max"),
     _edit("flux-2", "Flux.2 Pro", resolution="1k", ratios=_FLUX2_RATIOS,
@@ -130,7 +131,7 @@ CATALOGUE = (
     _edit("flux-2-flex", "Flux.2 Flex", resolution="1k", ratios=_FLUX2_RATIOS,
           resolutions=("1K", "2K")),
     _edit("flux-3-image", "Flux.3 (beta)", resolution="1k", ratios=_FLUX3_RATIOS,
-          resolutions=_ALL, note=BETA_NOTE),
+          resolutions=_ALL, note=BETA_NOTE, layout="flux3"),
     _edit("qwen-image-3-0-pro", "Qwen Image 3.0 Pro (beta)", resolution="1k",
           ratios=_FLUX2_RATIOS, resolutions=("1K", "2K"), note=BETA_NOTE),
     _edit("seedream-4-5", "Seedream 4.5", ratios=_SEEDREAM_RATIOS, resolutions=("2K", "4K")),
@@ -267,7 +268,8 @@ class MagnificBackend(McpBackend):
 
     def _retouch_args(self, spec, request, plate_id=None, mask_id=None):
         """``images_retouch`` arguments (one call per variation); no ids for a quote."""
-        prompt = request.prompt.strip()
+        # Region prompts go into the prompt text; with boxes an empty prompt is no erase.
+        prompt, _ = self.layout_prompt(request, request.prompt.strip(), spec.id)
         erase = not prompt or spec.extra.get("erase_only")
         model = (spec.erase or spec.id) if erase else spec.id
         args = {"mode": "erase" if erase else "replace", "model": model}
@@ -306,7 +308,9 @@ class MagnificBackend(McpBackend):
     def _edit_args(self, spec, request, plate_id=None, count=1):
         """``images_generate`` arguments; without ``plate_id`` (a quote) no references,
         because ``simulate_cost`` only accepts identifiers of real creations."""
-        args = {"prompt": ref_prompt(request.prompt), "mode": spec.id, "count": count}
+        boxes = self.sends_boxes(request, spec.id)
+        prompt, _ = self.layout_prompt(request, ref_prompt(request.prompt, boxes), spec.id)
+        args = {"prompt": prompt, "mode": spec.id, "count": count}
         if plate_id:
             args["references"] = [{"type": "image", "identifier": plate_id}]
         seed = request.seed & 0xFFFFFFFF    # images_generate takes 0..4294967295

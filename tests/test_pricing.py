@@ -88,6 +88,12 @@ class StaticTests(unittest.TestCase):
                                                   "medium", 1).amount, 0.06)
         self.assertIsNone(pricing.fal_static("ideogram/v4.5/edit", 1024, 1024, "auto", 1))
         self.assertIsNone(pricing.fal_static("fal-ai/flux-pro/v1/fill", 1024, 1024, "auto", 1))
+        klein = "blackforestlabs/flux-3/klein/edit-image"
+        for (w, h), price in (((1024, 1024), 0.009), ((2048, 2048), 0.014),
+                              ((4096, 4096), 0.036)):
+            quote = pricing.fal_static(klein, w, h, "auto", 2)
+            self.assertAlmostEqual(quote.amount, 2 * price, msg=w)
+            self.assertFalse(quote.exact)
         gpt = pricing.fal_static("openai/gpt-image-2/edit", 1024, 1024, "high", 1)
         self.assertEqual(gpt.unit, pricing.USD)
 
@@ -244,6 +250,16 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(pricing.key(snap), pricing.key(self.snap(b, prompt="a dog")))
         self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, prompt=" ")))
         self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, count=4)))
+        self.assertNotEqual(pricing.key(snap), pricing.key(self.snap(b, boxes=True)))
+
+    def test_boxes_reach_the_quote_request(self):
+        b = FakeBackend(pricing.Quote(1), None)
+        pricing.request(self.snap(b, prompt=""), threaded=False)
+        pricing.request(self.snap(b, prompt="", boxes=True), threaded=False)
+        self.assertEqual(b.estimates[0].boxes, [])
+        (box,) = b.estimates[1].boxes
+        self.assertTrue(box.prompt)
+        self.assertEqual((box.x0, box.y0, box.x1, box.y1), (0, 0, 2048, 1152))
 
     def test_forget_balance(self):
         b = FakeBackend(pricing.Quote(1), pricing.Balance(5))

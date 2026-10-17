@@ -1,0 +1,14 @@
+{
+  "label": "FLUX 3 Image (Comfy API)",
+  "description": "Reference edit with Black Forest Labs FLUX 3 Image through Comfy API nodes, 1K output; region boxes go into the prompt. Needs a Comfy account API key; uses credits.",
+  "kind": "edit",
+  "mask": false,
+  "layout": "flux3",
+  "family": "Black Forest Labs",
+  "pixels": 1048576,
+  "multiple": 16,
+  "min_side": 256,
+  "max_side": 1536,
+  "api_nodes": true,
+  "timeout": 600
+}

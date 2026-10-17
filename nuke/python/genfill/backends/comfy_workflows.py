@@ -8,11 +8,16 @@ A workflow is a ComfyUI graph in **API format** (ComfyUI: Workflow > Export (API
      "min_side": 512, "max_side": 2048, "api_nodes": false, "timeout": 1800,
      "requires": ["flux1-fill-dev.safetensors"]}
 
+Optional sidecar keys: ``mask`` (``false``: the graph has no ``GenFill Mask`` node, e.g. an
+``edit`` workflow that re-renders the crop), ``layout`` (region prompt style, see
+:mod:`layout`) and ``family`` (the group in the model version menu).
+
 GenFill finds its inputs by node title (``_meta.title``, case-insensitive):
 
 ==================  =====================================================================
 GenFill Image       LoadImage: the plate crop
-GenFill Mask        LoadImageMask (channel red, white = fill), or LoadImage (mask from alpha)
+GenFill Mask        LoadImageMask (channel red, white = fill), or LoadImage (mask from alpha);
+                    not needed with the sidecar ``"mask": false``
 GenFill Prompt      a node with a ``text`` / ``prompt`` / ``value`` / ``string`` input
 GenFill Negative    same, for the negative prompt (optional)
 GenFill Seed        a node with ``seed`` / ``noise_seed`` / ``value``; without one, every
@@ -55,12 +60,14 @@ class Workflow(object):
         self.kind = self.meta.get("kind", "inpaint")
         self.empty_prompt = self.meta.get("empty_prompt") or None
         self.api_nodes = bool(self.meta.get("api_nodes"))
+        self.needs_mask = needs_mask(self.meta)
         self.timeout = float(self.meta.get("timeout", 1800))
 
     def spec(self):
         note = self.description if not self.error else "Not usable: " + self.error
+        extra = {"family": self.meta["family"]} if self.meta.get("family") else {}
         return ModelSpec(self.id, self.label, kind=self.kind, erase=self.empty_prompt,
-                         max_count=10, note=note, resolutions=self.resolutions())
+                         max_count=10, note=note, resolutions=self.resolutions(), **extra)
 
     def resolutions(self):
         """Tiers this workflow can run: those whose square side fits the sidecar ``max_side``
@@ -90,6 +97,7 @@ class Workflow(object):
         return [nid for nid, n in self.graph.items() if _title(n) == title]
 
     def mask_loader(self):
+        """Class of the ``GenFill Mask`` node, ``""`` when the graph has none."""
         ids = self.nodes_titled(T_MASK)
         return self.graph[ids[0]].get("class_type", "") if ids else ""
 
@@ -133,16 +141,25 @@ def _set_text(graph, ids, text):
         ins[key] = text
 
 
-def validate(graph):
-    """Error message for a graph GenFill cannot drive, or ``""``."""
+def needs_mask(meta):
+    """True unless the sidecar says ``"mask": false`` (no ``GenFill Mask`` node needed)."""
+    return meta.get("mask", True) is not False
+
+
+def validate(graph, mask=True):
+    """Error message for a graph GenFill cannot drive, or ``""``.
+
+    Args:
+        graph: The parsed workflow file.
+        mask: Whether a ``GenFill Mask`` node is required.
+    """
     if isinstance(graph, dict) and isinstance(graph.get("nodes"), list):
         return "saved in UI format; in ComfyUI use Workflow > Export (API)"
     if not isinstance(graph, dict) or not graph or not all(
             isinstance(n, dict) and "class_type" in n for n in graph.values()):
         return "not a ComfyUI API-format graph"
     titles = set(_title(n) for n in graph.values())
-    missing = [t for t, name in ((T_IMAGE, "GenFill Image"), (T_MASK, "GenFill Mask"))
-               if t not in titles]
+    missing = [t for t in ((T_IMAGE, T_MASK) if mask else (T_IMAGE,)) if t not in titles]
     if missing:
         return "no node titled %s" % " or ".join(
             {"genfill image": "'GenFill Image'", "genfill mask": "'GenFill Mask'"}[t] for t in missing)
@@ -181,7 +198,7 @@ def load(path):
             meta = {}
         with open(path, "r") as fh:
             graph = json.load(fh)
-        error = error or validate(graph)
+        error = error or validate(graph, needs_mask(meta))
     except (IOError, OSError, ValueError) as exc:
         error = "cannot read: %s" % exc
     return Workflow(wid, path, graph if not error else {}, meta, error)
