@@ -86,7 +86,8 @@ class NukeController(object):
         n = self.node
         return (n["gf_state"].value(), n["gf_backend"].value(), n["gf_prompt"].value(),
                 n["gf_model"].value(), self.quality(), self.resolution(), self.variations(),
-                self.source_format(), tuple(sorted(self._engine.status(n).items())))
+                self.source_format(), tuple(sorted(self._engine.status(n).items())),
+                self.box_signature())
 
     def source_format(self):
         """``(name, width, height)`` of the plate on the Source input, or None.
@@ -238,6 +239,64 @@ class NukeController(object):
     def discovery_revision(self):
         from ..backends import discovery
         return discovery.revision()
+
+    # region prompt boxes --------------------------------------------------
+    def boxes(self):
+        """``[boxes.BoxInfo]`` of the node, sorted by box number."""
+        from .. import boxes
+        return boxes.list_boxes(self.node)
+
+    def box_signature(self):
+        """What the Region prompts section shows: ``((n, prompt, enabled), ...)`` and the
+        "show boxes in Viewer" toggle (box rectangles are not shown, so not part of it)."""
+        return (tuple((b.n, b.prompt, b.enabled) for b in self.boxes()), self.show_boxes())
+
+    def add_box(self):
+        """Add a box at the default rectangle; returns its number."""
+        from .. import boxes
+        return boxes.add_box(self.node)
+
+    def remove_box(self, n):
+        from .. import boxes
+        return boxes.remove_box(self.node, n)
+
+    def set_box_prompt(self, n, text):
+        """Store box ``n``'s text (no-op when unchanged, so no needless undo steps)."""
+        from .. import boxes
+        current = next((b for b in self.boxes() if b.n == n), None)
+        if current is None:
+            return False
+        if (text or "") != current.prompt:
+            boxes.set_prompt(self.node, n, text)
+        return True
+
+    def set_box_enabled(self, n, on):
+        from .. import boxes
+        current = next((b for b in self.boxes() if b.n == n), None)
+        if current is None:
+            return False
+        if bool(on) != current.enabled:
+            boxes.set_enabled(self.node, n, on)
+        return True
+
+    def box_colour(self, n):
+        """``"#rrggbb"`` palette colour of box ``n`` (the Viewer outline colour)."""
+        from .. import boxes
+        return boxes.palette_hex(n)
+
+    def layout_supported(self):
+        """True if the current backend + model take region prompts (have a layout style)."""
+        b = self._gfnode.backend_for(self.node)
+        return b.layout_style(self.model_version()) is not None
+
+    def show_boxes(self):
+        knobs = self.node.knobs()
+        return bool(knobs["gf_show_boxes"].value()) if "gf_show_boxes" in knobs else True
+
+    def set_show_boxes(self, on):
+        knobs = self.node.knobs()
+        if "gf_show_boxes" in knobs and bool(on) != bool(knobs["gf_show_boxes"].value()):
+            knobs["gf_show_boxes"].setValue(bool(on))
 
     def status(self):
         return self._engine.status(self.node)
@@ -437,6 +496,71 @@ class PromptEdit(QtWidgets.QPlainTextEdit):
             self.setFixedHeight(height)
 
 
+REGION_UNSUPPORTED = "Region prompts work with FLUX 3 and Ideogram 4.5 models."
+REGION_HINT = ("Box text describes what goes in the box. Cite a box in the main prompt "
+               "as <obj_N>.")
+
+
+class BoxRow(QtWidgets.QWidget):
+    """One region prompt box: colour swatch, ``<obj_N>`` tag, text, enable, delete.
+
+    The text is committed (``committed(n, text)``) on Enter and when the field loses focus.
+    """
+
+    tagClicked = QtCore.Signal(int)
+    committed = QtCore.Signal(int, str)
+    toggled = QtCore.Signal(int, bool)
+    removed = QtCore.Signal(int)
+
+    def __init__(self, n, colour, parent=None):
+        super(BoxRow, self).__init__(parent)
+        self.n = n
+        self.setObjectName("gfBoxRow")
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.swatch = QtWidgets.QLabel()
+        self.swatch.setObjectName("gfSwatch")
+        self.swatch.setFixedSize(12, 12)
+        self.swatch.setStyleSheet("background: %s; border-radius: 3px;" % colour)
+        self.swatch.setToolTip("Colour of this box in the Viewer")
+        row.addWidget(self.swatch)
+        self.tag = QtWidgets.QToolButton()
+        self.tag.setObjectName("gfTag")
+        self.tag.setText("<obj_%d>" % n)
+        self.tag.setCursor(Qt.PointingHandCursor)
+        self.tag.setToolTip("Insert <obj_%d> at the cursor in the main prompt" % n)
+        self.tag.clicked.connect(lambda: self.tagClicked.emit(self.n))
+        row.addWidget(self.tag)
+        self.edit = QtWidgets.QLineEdit()
+        self.edit.setObjectName("gfBoxPrompt")
+        self.edit.setPlaceholderText("What goes in this box")
+        self.edit.setToolTip(REGION_HINT)
+        self.edit.editingFinished.connect(
+            lambda: self.committed.emit(self.n, self.edit.text()))
+        row.addWidget(self.edit, 1)
+        self.enabled = QtWidgets.QCheckBox()
+        self.enabled.setObjectName("gfBoxEnabled")
+        self.enabled.setToolTip("Use this box (a disabled box is neither drawn nor sent)")
+        self.enabled.toggled.connect(lambda on: self.toggled.emit(self.n, bool(on)))
+        row.addWidget(self.enabled)
+        self.delete = QtWidgets.QToolButton()
+        self.delete.setObjectName("gfIcon")
+        self.delete.setText(u"×")
+        self.delete.setToolTip("Delete this box")
+        self.delete.clicked.connect(lambda: self.removed.emit(self.n))
+        row.addWidget(self.delete)
+
+    def show_box(self, info):
+        """Show ``info`` (a BoxInfo); the text is left alone while the artist types in it."""
+        if not self.edit.hasFocus() and self.edit.text() != info.prompt:
+            self.edit.setText(info.prompt)
+        if self.enabled.isChecked() != info.enabled:
+            self.enabled.blockSignals(True)
+            self.enabled.setChecked(info.enabled)
+            self.enabled.blockSignals(False)
+
+
 class GenFillPanel(QtWidgets.QWidget):
     """The widget returned to Nuke's PyCustom_Knob."""
 
@@ -454,6 +578,8 @@ class GenFillPanel(QtWidgets.QWidget):
         self._was_running = False
         self._auth_checked = 0.0
         self._prompt_filled = None  # last seen "prompt is not empty" of the prompt field
+        self._box_rows = {}         # box number -> BoxRow
+        self._box_key = None        # ((n, prompt, enabled), ...) the rows show
         self.setObjectName("GenFillPanel")
         self.setStyleSheet(style.STYLESHEET)
         self._build()
@@ -597,6 +723,8 @@ class GenFillPanel(QtWidgets.QWidget):
         self.cost_info.setVisible(False)
         root.addWidget(self.cost_info)
 
+        self._build_regions(root)
+
         # Progress / status
         self.progress = QtWidgets.QProgressBar()
         self.progress.setObjectName("gfProgress")
@@ -658,6 +786,56 @@ class GenFillPanel(QtWidgets.QWidget):
 
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.setMinimumWidth(3 * (THUMB_W + 12))
+
+    def _build_regions(self, root):
+        """The Region prompts section: header with the Viewer toggle, box rows, Add box, hint.
+
+        Controllers without boxes hide it.
+        """
+        self.regions = QtWidgets.QWidget()
+        self.regions.setObjectName("gfRegions")
+        rl = QtWidgets.QVBoxLayout(self.regions)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(4)
+        rh = QtWidgets.QHBoxLayout()
+        self.regions_title = QtWidgets.QLabel("REGION PROMPTS")
+        self.regions_title.setObjectName("gfSection")
+        rh.addWidget(self.regions_title)
+        rh.addStretch(1)
+        self.show_boxes = QtWidgets.QCheckBox("show boxes in Viewer")
+        self.show_boxes.setObjectName("gfShowBoxes")
+        self.show_boxes.setToolTip("Draw every box as a coloured outline over the GenFill "
+                                   "output in the Viewer (never in renders).")
+        self.show_boxes.toggled.connect(self._on_show_boxes)
+        rh.addWidget(self.show_boxes)
+        rl.addLayout(rh)
+
+        # Everything below the header is disabled for models without region prompts.
+        self.regions_body = QtWidgets.QWidget()
+        bl = QtWidgets.QVBoxLayout(self.regions_body)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(4)
+        self.box_list = QtWidgets.QVBoxLayout()
+        self.box_list.setContentsMargins(0, 0, 0, 0)
+        self.box_list.setSpacing(4)
+        bl.addLayout(self.box_list)
+        ah = QtWidgets.QHBoxLayout()
+        self.add_box_btn = QtWidgets.QToolButton()
+        self.add_box_btn.setObjectName("gfIcon")
+        self.add_box_btn.setText("+ Add box")
+        self.add_box_btn.setToolTip("Add a box with its own prompt; drag its handles in the "
+                                    "Viewer to place it.")
+        self.add_box_btn.clicked.connect(self._on_add_box)
+        ah.addWidget(self.add_box_btn)
+        ah.addStretch(1)
+        bl.addLayout(ah)
+        self.regions_hint = QtWidgets.QLabel(REGION_HINT)
+        self.regions_hint.setObjectName("gfMuted")
+        self.regions_hint.setWordWrap(True)
+        bl.addWidget(self.regions_hint)
+        rl.addWidget(self.regions_body)
+        self.regions.setVisible(hasattr(self.ctl, "boxes"))
+        root.addWidget(self.regions)
 
     def _option_combo(self, layout, label, items, tip, slot):
         lbl = QtWidgets.QLabel(label)
@@ -783,11 +961,15 @@ class GenFillPanel(QtWidgets.QWidget):
     def _add_family_header(self, name):
         """A bold, disabled, non-selectable group heading in the version menu (data None)."""
         self.version.addItem(name, None)
-        item = self.version.model().item(self.version.count() - 1)
-        item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+        index = self.version.count() - 1
+        # Item data roles, not model().item(): PySide keeps a QStandardItem wrapper after
+        # version.clear() deletes the item, and hands that stale wrapper out for a later
+        # object at the same address. Qt.UserRole - 1 is where QStandardItem keeps its flags;
+        # 0 = neither enabled nor selectable.
+        self.version.setItemData(index, 0, Qt.UserRole - 1)
         font = QtGui.QFont(self.version.font())
         font.setBold(True)
-        item.setFont(font)
+        self.version.setItemData(index, font, Qt.FontRole)
 
     def _show_version(self, force=False):
         """Show the gf_model value in the combo (not while the artist types)."""
@@ -823,6 +1005,50 @@ class GenFillPanel(QtWidgets.QWidget):
         finally:
             self.generate_btn.setEnabled(True)
         self._sync(force=True)
+
+    @_safe
+    def _on_add_box(self, *args):
+        n = self.ctl.add_box()
+        self._sync(force=True)
+        row = self._box_rows.get(n)
+        if row is not None:
+            row.edit.setFocus()
+
+    @_safe
+    def _on_remove_box(self, n):
+        self.ctl.remove_box(n)
+        self._sync(force=True)
+
+    @_safe
+    def _on_box_committed(self, n, text):
+        self.ctl.set_box_prompt(n, text)
+        self._sync(force=True)
+
+    @_safe
+    def _on_box_toggled(self, n, on):
+        self.ctl.set_box_enabled(n, on)
+        self._sync(force=True)
+
+    @_safe
+    def _on_show_boxes(self, on):
+        self.ctl.set_show_boxes(on)
+        self._sync(force=True)
+
+    @_safe
+    def _on_box_tag(self, n):
+        """Insert ``<obj_N>`` at the main prompt's cursor (spaced from the words around it)."""
+        tag = "<obj_%d>" % n
+        cursor = self.prompt.textCursor()
+        text = self.prompt.toPlainText()
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        if start > 0 and not text[start - 1].isspace():
+            tag = " " + tag
+        if end < len(text) and not text[end].isspace():
+            tag += " "
+        cursor.insertText(tag)
+        self.prompt.setTextCursor(cursor)
+        self.prompt.setFocus()
+        self.ctl.set_prompt(self.prompt.text())
 
     @_safe
     def _on_delete_selected(self, *args):
@@ -901,6 +1127,7 @@ class GenFillPanel(QtWidgets.QWidget):
         # prompt (don't fight the user while typing)
         if not self.prompt.hasFocus() and self.prompt.text() != self.ctl.prompt():
             self.prompt.setText(self.ctl.prompt())
+        self._sync_boxes()
 
         # status
         st = self.ctl.status()
@@ -946,6 +1173,56 @@ class GenFillPanel(QtWidgets.QWidget):
         else:
             self.footer.setText("")
         self.footer.setVisible(idx >= 0)
+
+    def _sync_boxes(self):
+        """Region prompts section from the node.
+
+        Rows change only when the box list (n, prompt, enabled) changes: rows of removed
+        boxes go, new boxes get a row, the others are updated in place (a row whose text
+        has focus keeps what the artist is typing).
+        """
+        if not hasattr(self.ctl, "boxes"):
+            return
+        supported = self.ctl.layout_supported()
+        self.regions_body.setEnabled(supported)
+        tip = "" if supported else REGION_UNSUPPORTED
+        for w in (self.regions_title, self.regions_body):
+            if w.toolTip() != tip:
+                w.setToolTip(tip)
+        show = self.ctl.show_boxes()
+        if self.show_boxes.isChecked() != show:
+            self.show_boxes.blockSignals(True)
+            self.show_boxes.setChecked(show)
+            self.show_boxes.blockSignals(False)
+
+        boxes = self.ctl.boxes()
+        key = tuple((b.n, b.prompt, b.enabled) for b in boxes)
+        if key == self._box_key:
+            return
+        self._box_key = key
+        numbers = set(b.n for b in boxes)
+        for n in [n for n in self._box_rows if n not in numbers]:
+            row = self._box_rows.pop(n)
+            row.blockSignals(True)          # no commit from a vanishing row
+            row.edit.blockSignals(True)
+            self.box_list.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+        for b in boxes:
+            row = self._box_rows.get(b.n)
+            if row is None:
+                row = BoxRow(b.n, self.ctl.box_colour(b.n))
+                row.tagClicked.connect(self._on_box_tag)
+                row.committed.connect(self._on_box_committed)
+                row.toggled.connect(self._on_box_toggled)
+                row.removed.connect(self._on_remove_box)
+                self._box_rows[b.n] = row
+            row.show_box(b)
+        # Keep the rows in box order (re-adding a widget keeps its focus and text).
+        for b in boxes:
+            self.box_list.removeWidget(self._box_rows[b.n])
+        for b in boxes:
+            self.box_list.addWidget(self._box_rows[b.n])
 
     def _sync_options(self):
         """Quality / Resolution combos from the node, plus the size the model gets."""

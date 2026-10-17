@@ -37,6 +37,18 @@ QLabel#gfCounter {{ color: #d8d8d8; font-size: 12px; min-width: 34px; }}
 QToolButton#gfIcon {{ background: transparent; color: #cfcfcf; border: none; border-radius: 6px;
                      padding: 3px 6px; font-size: 12px; }}
 QToolButton#gfIcon:hover {{ background: #3a3a3a; }}
+QToolButton#gfIcon:disabled {{ color: #5a5a5a; }}
+QToolButton#gfTag {{ background: {bar}; color: #cfcfcf; border: 1px solid {bar_border};
+                    border-radius: 4px; padding: 1px 5px; font-size: 11px;
+                    font-family: Menlo, Consolas, monospace; }}
+QToolButton#gfTag:hover {{ border-color: {accent}; }}
+QToolButton#gfTag:disabled {{ color: #5a5a5a; border-color: #3a3a3a; }}
+QLineEdit#gfBoxPrompt {{ background: {bar}; color: {text}; border: 1px solid {bar_border};
+                        border-radius: 5px; padding: 2px 6px; font-size: 12px;
+                        selection-background-color: {accent}; }}
+QLineEdit#gfBoxPrompt:focus {{ border-color: {accent}; }}
+QLineEdit#gfBoxPrompt:disabled {{ color: #6a6a6a; border-color: #3a3a3a; }}
+QCheckBox#gfShowBoxes {{ color: {muted}; font-size: 11px; }}
 QComboBox#gfModel {{ background: #1f1f1f; color: {text}; border: 1px solid {bar_border};
                     border-radius: 6px; padding: 3px 8px; font-size: 12px; min-height: 20px; }}
 QComboBox#gfModel:hover {{ border-color: #5a5a5a; }}

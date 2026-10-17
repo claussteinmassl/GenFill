@@ -94,18 +94,132 @@ class VersionMenu(unittest.TestCase):
         self.assertEqual(names[0], "Magnific")
         self.assertIn("Google", names)
         for i in headers:
-            flags = model.item(i).flags()
+            flags = model.flags(model.index(i, 0))
             self.assertFalse(flags & Qt.ItemIsSelectable)
             self.assertFalse(flags & Qt.ItemIsEnabled)
-            self.assertTrue(model.item(i).font().bold())
+            self.assertTrue(combo.itemData(i, Qt.FontRole).bold())
         idx = combo.findData("imagen-nano-banana-2")
         self.assertTrue(combo.itemText(idx).startswith("  "))
-        self.assertTrue(model.item(idx).flags() & Qt.ItemIsSelectable)
+        self.assertTrue(model.flags(model.index(idx, 0)) & Qt.ItemIsSelectable)
 
     def test_single_family_backend_has_no_headers(self):
         combo = self._panel("Offline").version
         self.assertEqual([combo.itemText(i) for i in range(combo.count())
                           if combo.itemData(i) is None and combo.itemText(i)], [])
+
+
+@unittest.skipUnless(HAVE_QT, "PySide6/PySide2 not installed")
+class RegionPrompts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        import fake_nuke
+        cls.nuke = fake_nuke.install()
+        from genfill.ui.qt import QtCore, QtGui, QtWidgets
+        cls.QtGui, cls.QtWidgets = QtGui, QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def setUp(self):
+        from genfill import boxes, node as gfnode
+        self.boxes = boxes
+        self.mod = _real_panel()
+        self.g = gfnode.create()
+        self.g.setInput(0, self.nuke.nodes.Read(name="Plate"))
+        self.g["gf_backend"].setValue([l for l in gfnode.backend_labels() if "fal" in l][0])
+        self.g["gf_model"].setValue("blackforestlabs/flux-3/edit-image")
+        boxes.add_box(self.g, (100, 100, 400, 400))
+        boxes.add_box(self.g, (600, 300, 900, 700))
+        boxes.set_prompt(self.g, 1, "a red balloon")
+        boxes.set_enabled(self.g, 2, False)
+        self.w = self.mod.GenFillPanel(self.mod.NukeController(self.g))
+
+    def tearDown(self):
+        self.w._timer.stop()
+        self.w.close()
+        self.w.deleteLater()
+
+    def _rows(self):
+        layout = self.w.box_list
+        return [layout.itemAt(i).widget() for i in range(layout.count())]
+
+    def test_section_shows_one_row_per_box(self):
+        rows = self._rows()
+        self.assertEqual([r.n for r in rows], [1, 2])
+        self.assertEqual([r.tag.text() for r in rows], ["<obj_1>", "<obj_2>"])
+        self.assertEqual(rows[0].edit.text(), "a red balloon")
+        self.assertTrue(rows[0].enabled.isChecked())
+        self.assertFalse(rows[1].enabled.isChecked())
+        self.assertIn(self.boxes.palette_hex(2), rows[1].swatch.styleSheet())
+        self.assertTrue(self.w.regions_body.isEnabled())
+        self.assertTrue(self.w.show_boxes.isChecked())
+        self.assertIn("<obj_N>", self.w.regions_hint.text())
+
+    def test_add_and_remove_rows(self):
+        self.w.add_box_btn.click()
+        self.assertEqual([r.n for r in self._rows()], [1, 2, 3])
+        self.assertEqual([b.n for b in self.boxes.list_boxes(self.g)], [1, 2, 3])
+        first = self._rows()[0]
+        self._rows()[1].delete.click()
+        self.assertEqual([r.n for r in self._rows()], [1, 3])
+        self.assertEqual([b.n for b in self.boxes.list_boxes(self.g)], [1, 3])
+        self.assertIs(self._rows()[0], first)       # surviving rows are kept, not rebuilt
+        self.w.add_box_btn.click()                  # the lowest free number comes back
+        self.assertEqual([r.n for r in self._rows()], [1, 2, 3])
+
+    def test_edits_commit_to_the_box(self):
+        row = self._rows()[1]
+        row.edit.setText("a kite")
+        row.edit.editingFinished.emit()
+        row.enabled.setChecked(True)
+        info = self.boxes.list_boxes(self.g)[1]
+        self.assertEqual((info.prompt, info.enabled), ("a kite", True))
+
+    def test_node_changes_show_up_but_not_over_a_focused_edit(self):
+        self.w.show()
+        self.w.activateWindow()
+        row = self._rows()[0]
+        row.edit.setFocus()
+        self.app.processEvents()
+        if not row.edit.hasFocus():
+            self.skipTest("no keyboard focus on this platform plugin")
+        row.edit.setText("typing...")
+        self.boxes.set_prompt(self.g, 1, "changed on the node")
+        self.boxes.set_prompt(self.g, 2, "other box")
+        self.w._sync()
+        self.assertEqual(row.edit.text(), "typing...")
+        self.assertEqual(self._rows()[1].edit.text(), "other box")
+        self.w.prompt.setFocus()
+        self.app.processEvents()
+        self.assertEqual(self.boxes.list_boxes(self.g)[0].prompt, "typing...")  # focus-out commit
+
+    def test_tag_inserts_at_the_prompt_cursor(self):
+        self.w.prompt.setText("put the balloonhere")
+        cursor = self.w.prompt.textCursor()
+        cursor.setPosition(len("put the balloon"))
+        self.w.prompt.setTextCursor(cursor)
+        self._rows()[0].tag.click()
+        self.assertEqual(self.w.prompt.text(), "put the balloon <obj_1> here")
+        self.assertEqual(self.g["gf_prompt"].value(), "put the balloon <obj_1> here")
+
+    def test_show_boxes_toggle(self):
+        self.w.show_boxes.setChecked(False)
+        self.assertFalse(self.g["gf_show_boxes"].value())
+        self.g["gf_show_boxes"].setValue(True)
+        self.w._sync()
+        self.assertTrue(self.w.show_boxes.isChecked())
+
+    def test_disabled_for_models_without_layouts_and_boxes_are_kept(self):
+        self.g["gf_model"].setValue("fal-ai/nano-banana-pro/edit")
+        self.w._sync()
+        self.assertFalse(self.w.regions_body.isEnabled())
+        self.assertEqual(self.w.regions_body.toolTip(), self.mod.REGION_UNSUPPORTED)
+        self.assertEqual([r.n for r in self._rows()], [1, 2])
+        self.assertEqual(len(self.boxes.list_boxes(self.g)), 2)
+        self.assertTrue(self.w.show_boxes.isEnabled())
+        self.g["gf_model"].setValue("ideogram/v4.5/edit")
+        self.w._sync()
+        self.assertTrue(self.w.regions_body.isEnabled())
+        self.assertEqual(self.w.regions_body.toolTip(), "")
 
 
 if __name__ == "__main__":
