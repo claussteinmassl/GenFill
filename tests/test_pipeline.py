@@ -395,6 +395,171 @@ class PipelineTests(unittest.TestCase):
         finally:
             fake_nuke.SELECTION_BOX[:] = [0.4, 0.3, 0.6, 0.6]
 
+    # ---- region prompt boxes --------------------------------------------------
+
+    def _generate_with_layout(self, style, prompt="a crate"):
+        """Generate one variation with the mock backend reporting ``style``; the request."""
+        from unittest import mock
+        g = self.g
+        g["gf_variations"].setValue(1)
+        backend = gfnode.backend_for(g)
+        seen = []
+        real = backend.generate
+
+        def spy(self, req, *a, **k):
+            seen.append(req)
+            return real(req, *a, **k)
+
+        with mock.patch.object(type(backend), "layout_style", lambda self, model="": style), \
+                mock.patch.object(type(backend), "generate", spy):
+            ok = engine.generate(g, prompt, blocking=True)
+        self.assertTrue(ok, engine.status(g))
+        return seen[0], engine.get_state(g)["generations"][-1]
+
+    @staticmethod
+    def _to_crop(rect, gen):
+        x, y, w, h = gen["region"]
+        mw, mh = gen["model_size"]
+        bx, by, br, bt = rect
+        return ((bx - x) * mw / float(w), (y + h - bt) * mh / float(h),
+                (br - x) * mw / float(w), (y + h - by) * mh / float(h))
+
+    def test_boxes_reach_the_request_in_crop_pixels(self):
+        from genfill import boxes
+        rect = (800, 450, 1000, 600)                 # inside the fake selection
+        boxes.add_box(self.g, rect)
+        boxes.set_prompt(self.g, 1, "a red balloon")
+        req, gen = self._generate_with_layout("ideogram")
+        self.assertEqual(req.prompt, "a crate")        # Ideogram: the backend formats it
+        self.assertEqual(len(req.boxes), 1)
+        b = req.boxes[0]
+        self.assertEqual((b.n, b.prompt), (1, "a red balloon"))
+        for got, want in zip((b.x0, b.y0, b.x1, b.y1), self._to_crop(rect, gen)):
+            self.assertAlmostEqual(got, want, places=1)
+        self.assertLess(b.y0, b.y1)                    # top-left origin: t is the smaller y
+        self.assertEqual(gen["boxes"], [{"n": 1, "x0": b.x0, "y0": b.y0, "x1": b.x1,
+                                         "y1": b.y1, "prompt": "a red balloon"}])
+        self.assertEqual(gen["layout"], "ideogram")
+        self.assertEqual(len(gen["selection"]), 4)
+
+    def test_region_grows_to_include_every_enabled_box(self):
+        from genfill import boxes
+        boxes.add_box(self.g, (60, 40, 200, 160))      # far from the selection (bottom-left)
+        boxes.set_prompt(self.g, 1, "a dog")
+        boxes.add_box(self.g, (1800, 1000, 1900, 1070))
+        boxes.set_prompt(self.g, 2, "a bird")
+        boxes.set_enabled(self.g, 2, False)            # disabled: neither in the region nor sent
+        self.g["gf_context"].setValue(0.0)             # tight region: union + minimum pad
+        self.g["gf_min_size"].setValue(16)
+        req, gen = self._generate_with_layout("ideogram")
+        x, y, w, h = gen["region"]
+        self.assertLessEqual(x, 60)
+        self.assertLessEqual(y, 40)
+        self.assertLess(x + w, 1800)
+        self.assertEqual([b.n for b in req.boxes], [1])
+
+    def test_boxes_are_ignored_by_models_without_layouts(self):
+        from genfill import boxes
+        boxes.add_box(self.g, (60, 40, 200, 160))
+        boxes.set_prompt(self.g, 1, "a dog")
+        req, gen = self._generate_with_layout(None)
+        self.assertEqual(req.boxes, [])
+        self.assertEqual(req.prompt, "a crate")
+        self.assertNotIn("boxes", gen)
+        self.assertGreater(gen["region"][0], 60)
+
+    def test_box_without_text_widens_the_region_but_is_not_sent(self):
+        from genfill import boxes
+        boxes.add_box(self.g, (60, 40, 200, 160))
+        req, gen = self._generate_with_layout("ideogram")
+        self.assertEqual(req.boxes, [])
+        self.assertLessEqual(gen["region"][0], 60)
+
+    def test_boxes_alone_are_the_selection(self):
+        from genfill import boxes
+        g = self.g
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        fake_nuke.SELECTION_BOX[:] = [0, 0, 0, 0]      # the probe renders nothing
+        try:
+            boxes.add_box(g, (300, 300, 700, 600))
+            boxes.set_prompt(g, 1, "a lamp")
+            req, gen = self._generate_with_layout("flux3")
+        finally:
+            fake_nuke.SELECTION_BOX[:] = [0.4, 0.3, 0.6, 0.6]
+        self.assertTrue(gen["box_selection"])
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
+        self.assertEqual(gen["selection"], [300, 300, 700, 600])
+        x, y, w, h = gen["region"]
+        self.assertTrue(x <= 300 and y <= 300 and x + w >= 700 and y + h >= 600)
+        # explicit boxes: the prompt is sent as typed, prefixed for reference-edit FLUX 3
+        self.assertEqual(req.prompt, "In <ref_image_0>, a crate")
+        self.assertEqual([b.n for b in req.boxes], [1])
+        # A normal generation switches the box mask off again.
+        fake_nuke.add_shape(g.node(gfnode.ROTO))
+        req, gen = self._generate_with_layout(None)
+        self.assertFalse(gen.get("box_selection", False))
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 0)
+        engine.select(g, 0, 0)                          # back to the box generation
+        self.assertEqual(int(g.node(gfnode.BOX_MASK_SWITCH)["which"].value()), 1)
+
+    def test_no_selection_and_no_boxes_still_explains(self):
+        from genfill import boxes
+        g = self.g
+        g.node(gfnode.ROTO)["curves"].rootLayer[:] = []
+        boxes.add_box(g, (300, 300, 700, 600))
+        boxes.set_prompt(g, 1, "a lamp")
+        from unittest import mock
+        backend = gfnode.backend_for(g)
+        with mock.patch.object(type(backend), "layout_style", lambda self, model="": None):
+            self.assertFalse(engine.generate(g, "x", blocking=True))   # no layout support
+        self.assertIn("Draw Selection", engine.status(g)["error"])
+        boxes.set_enabled(g, 1, False)
+        with mock.patch.object(type(backend), "layout_style", lambda self, model="": "flux3"):
+            self.assertFalse(engine.generate(g, "x", blocking=True))   # only a disabled box
+        self.assertIn("Draw Selection", engine.status(g)["error"])
+
+    def test_box_outside_the_plate_is_dropped_with_a_note(self):
+        from genfill import boxes
+        boxes.add_box(self.g, (2500, 100, 2700, 300))   # right of the 1920 px plate
+        boxes.set_prompt(self.g, 1, "a ghost")
+        req, gen = self._generate_with_layout("ideogram")
+        self.assertEqual(req.boxes, [])
+        self.assertIn("outside", engine.status(self.g)["message"])
+        self.assertLess(gen["region"][0] + gen["region"][2], 1921)
+
+    def test_implicit_flux3_box_is_the_selection(self):
+        req, gen = self._generate_with_layout("flux3")
+        self.assertEqual(req.prompt, "In <ref_image_0>, a crate <obj_1>")
+        self.assertEqual(len(req.boxes), 1)
+        b = req.boxes[0]
+        self.assertEqual((b.n, b.prompt), (1, "a crate"))
+        for got, want in zip((b.x0, b.y0, b.x1, b.y1), self._to_crop(gen["selection"], gen)):
+            self.assertAlmostEqual(got, want, places=1)
+        self.assertEqual(gen["prompt"], "a crate")             # history: what was typed
+        self.assertEqual(gen["sent_prompt"], "In <ref_image_0>, a crate <obj_1>")
+        self.assertEqual(gen["boxes"][0]["prompt"], "a crate")
+
+    def test_implicit_box_for_fal_klein_has_no_prefix(self):
+        req, _gen = self._generate_with_layout("flux3_fields")
+        self.assertEqual(req.prompt, "a crate <obj_1>")
+        self.assertEqual([b.n for b in req.boxes], [1])
+
+    def test_no_implicit_box_for_ideogram_or_an_empty_prompt(self):
+        req, gen = self._generate_with_layout("ideogram")
+        self.assertEqual((req.prompt, req.boxes), ("a crate", []))
+        req, gen = self._generate_with_layout("flux3", prompt="")
+        self.assertEqual((req.prompt, req.boxes), ("", []))
+        self.assertNotIn("sent_prompt", gen)
+
+    def test_explicit_flux3_prompt_citing_the_reference_is_kept(self):
+        from genfill import boxes
+        boxes.add_box(self.g, (800, 450, 1000, 600))
+        boxes.set_prompt(self.g, 1, "a hat")
+        req, _gen = self._generate_with_layout("flux3", prompt="Put <obj_1> on <ref_image_0>")
+        self.assertEqual(req.prompt, "Put <obj_1> on <ref_image_0>")
+        req, _gen = self._generate_with_layout("flux3_fields", prompt="Put <obj_1> on him")
+        self.assertEqual(req.prompt, "Put <obj_1> on him")
+
     def test_missing_source(self):
         self.g.setInput(0, None)
         self.assertFalse(engine.generate(self.g, "x"))

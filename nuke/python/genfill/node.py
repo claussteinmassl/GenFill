@@ -17,7 +17,17 @@ Internal graph::
                                 └── Blur(feather) ────────────────┐
     Read(result) ── Reformat(to crop size) ── Transform(to crop xy)┴─ Merge(copy, masked) ─┐
                                                 └─ Copy(alpha) ── Premult ───────────────────┤
-    Source ─────────────────────────────────────────────────────────────────── Switch ── Output
+    Source ─────────────────────────────────────────────────────────────────── Switch ─┐
+                                                                                         │
+    Region prompt boxes (see boxes.py): GenFillBox<N> Crops on Source, not in the output.
+    Their outlines are merged over the output by a Switch that shows them in the Viewer only
+    (``$gui``); their filled union can replace an empty selection (box mask Switch after the
+    selection Switch, driven by the engine)::
+
+    Switch ─┬──────────────────────────────── Switch(gf_box_overlay) ── Output
+            └─ Merge(over outline N) ... ─────┘
+    Switch(selection) ─┬─────────────────── Switch(gf_box_mask) ── Erode(grow) ...
+                       └─ Merge(max box N) ──┘
 """
 from __future__ import annotations
 
@@ -64,6 +74,9 @@ PREMULT = "gf_fill_premult"
 OUT_SWITCH = "gf_output_switch"
 BLANK = "gf_layer_blank"
 LAYER = "gf_layer"
+BOX_OVERLAY = "gf_box_overlay"      # Switch: output, or output + box outlines ($gui only)
+BOX_MASK_SWITCH = "gf_box_mask"     # Switch: selection, or selection max filled boxes
+BOX_OVERLAY_EXPR = "$gui && parent.gf_show_boxes"
 
 # The Writes every node has. Old nodes may also hold WRITE_SRC_F (disabled, never run).
 WRITE_NODES = (PROBE_WRITE, WRITE_SRC, WRITE_MASK, WRITE_MASK_A)
@@ -214,7 +227,9 @@ def show_roto(group):
 # stay in the Viewer and the GenerativeFill panel is the only one you see.
 # A floating panel also doesn't count against the Properties bin's panel limit.
 
-def _hide_floating_panels(roto_name):
+def _hide_floating_panels(names):
+    """Hide the visible top-level windows named like the nodes in ``names`` (str or list)."""
+    names = {names} if isinstance(names, str) else set(names)
     try:
         from .ui.qt import QtWidgets
     except Exception:
@@ -225,7 +240,7 @@ def _hide_floating_panels(roto_name):
     hidden = 0
     for w in app.topLevelWidgets():
         try:
-            if w.isVisible() and w.objectName() == roto_name:
+            if w.isVisible() and w.objectName() in names:
                 w.hide()
                 hidden += 1
         except Exception:
@@ -233,27 +248,37 @@ def _hide_floating_panels(roto_name):
     return hidden
 
 
+def open_hidden_panels(nodes):
+    """Open each node's control panel floating and hide its window (Viewer handles only).
+
+    Returns:
+        True when the panels were opened; False without a GUI or a Nuke without forceFloat.
+    """
+    nodes = [n for n in nodes if n is not None]
+    if not nodes or not nuke.GUI:
+        return False
+    try:
+        for n in nodes:
+            n.showControlPanel(forceFloat=True)
+    except TypeError:          # Nuke without forceFloat
+        return False
+    names = [n.name() for n in nodes]
+    if _hide_floating_panels(names) >= len(names):
+        return True
+    try:                       # the windows can appear a moment later
+        from .ui.qt import QtCore
+        QtCore.QTimer.singleShot(0, lambda: _hide_floating_panels(names))
+        QtCore.QTimer.singleShot(150, lambda: _hide_floating_panels(names))
+    except Exception:
+        pass
+    return True
+
+
 def attach_roto_tools(group):
     """Show the built-in Roto's Viewer tools without showing its panel.
 
     Returns True when the tools are attached with the panel hidden."""
-    roto = group.node(ROTO)
-    if roto is None or not nuke.GUI:
-        return False
-    try:
-        roto.showControlPanel(forceFloat=True)
-    except TypeError:          # Nuke without forceFloat
-        return False
-    name = roto.name()
-    if _hide_floating_panels(name):
-        return True
-    try:                       # the window can appear a moment later
-        from .ui.qt import QtCore
-        QtCore.QTimer.singleShot(0, lambda: _hide_floating_panels(name))
-        QtCore.QTimer.singleShot(150, lambda: _hide_floating_panels(name))
-    except Exception:
-        pass
-    return True
+    return open_hidden_panels([group.node(ROTO)])
 
 
 def detach_roto_tools(group):
@@ -279,6 +304,20 @@ def _sync_roto_tools(group):
         _safe_call(attach_roto_tools, group)
     else:
         _safe_call(detach_roto_tools, group)
+
+
+def attach_viewer_tools(group):
+    """Everything GenFill puts in the Viewer while its panel is open: the selection Roto's
+    tools (Shapes mode) and the handles of every enabled region prompt box."""
+    from . import boxes
+    _sync_roto_tools(group)
+    _safe_call(boxes.attach_box_tools, group)
+
+
+def detach_viewer_tools(group):
+    from . import boxes
+    _safe_call(detach_roto_tools, group)
+    _safe_call(boxes.detach_box_tools, group)
 
 
 def _build_internals(group):
@@ -419,6 +458,38 @@ def _build_internals(group):
         _place(out, 1, 13)
     _build_layer(group)
     _build_color_nodes(group)
+    _build_box_switches(group)
+
+
+def _output_node(group):
+    for n in group.nodes():
+        if n.Class() == "Output":
+            return n
+    return None
+
+
+def _build_box_switches(group):
+    """Insert the box overlay Switch before the Output and the box mask Switch after the
+    selection Switch. Both pass through until boxes exist (see boxes.rebuild_overlay)."""
+    with group:
+        out_sw = group.node(OUT_SWITCH)
+        out = _output_node(group)
+        if group.node(BOX_OVERLAY) is None and out_sw is not None and out is not None:
+            ov = nuke.nodes.Switch(name=BOX_OVERLAY)
+            ov.setInput(0, out_sw)
+            ov.setInput(1, out_sw)
+            ov["which"].setExpression(BOX_OVERLAY_EXPR)
+            ov.setXYpos(out_sw.xpos(), out_sw.ypos() + 35)
+            out.setInput(0, ov)
+        sel = group.node(SEL_SWITCH)
+        grow = group.node(GROW)
+        if group.node(BOX_MASK_SWITCH) is None and sel is not None and grow is not None:
+            bm = nuke.nodes.Switch(name=BOX_MASK_SWITCH)
+            bm.setInput(0, sel)
+            bm.setInput(1, sel)
+            bm["which"].setValue(0)      # 1 = boxes are the selection (set by the engine)
+            bm.setXYpos(sel.xpos(), sel.ypos() + 35)
+            grow.setInput(0, bm)
 
 
 def _expression(name, exprs, inp, col, row):
@@ -549,6 +620,15 @@ def ensure_current(group):
     if "gf_shapes" not in group.knobs() and "gf_selection" in group.knobs():
         _add_shape_knobs(group, upgrade=True)
         changed = True
+    if "gf_show_boxes" not in group.knobs():
+        _add_show_boxes_knob(group)     # before the overlay Switch, whose expression reads it
+        changed = True
+    if (group.node(BOX_OVERLAY) is None and group.node(OUT_SWITCH) is not None
+            and _output_node(group) is not None) or \
+            (group.node(BOX_MASK_SWITCH) is None and group.node(SEL_SWITCH) is not None
+             and group.node(GROW) is not None):
+        _build_box_switches(group)
+        changed = True
     if "gf_transfer" in group.knobs():
         group["gf_transfer"].setLabel("custom colorspace")
     knob = group.knobs().get("gf_backend")
@@ -621,6 +701,16 @@ def _add_shape_knobs(group, upgrade=False):
         group.addKnob(k)
 
 
+def _add_show_boxes_knob(group):
+    k = nuke.Boolean_Knob("gf_show_boxes", "show boxes in Viewer")
+    k.setValue(True)
+    k.setTooltip("Outline the region prompt boxes in their colours on this node's output. "
+                 "Interactive Viewer only: renders never show them.")
+    k.setFlag(nuke.STARTLINE)
+    group.addKnob(k)
+    return k
+
+
 def draw_selection(group):
     """Draw Selection button: Shapes mode, Roto tools in the Viewer."""
     if "gf_selection" in group.knobs():
@@ -655,6 +745,7 @@ def _add_knobs(group):
     k = nuke.Enumeration_Knob("gf_output", "output", OUTPUT_MODES)
     k.setTooltip(OUTPUT_TOOLTIP)
     group.addKnob(k)
+    _add_show_boxes_knob(group)
 
     # ---- Settings tab ----------------------------------------------------
     group.addKnob(nuke.Tab_Knob("gf_settings_tab", "Settings"))
@@ -780,8 +871,8 @@ def knob_changed():
         except Exception as exc:  # never break the properties panel
             print("GenFill: could not refresh result: %s" % exc)
         if name == "showPanel":
-            _sync_roto_tools(node)
+            attach_viewer_tools(node)
     elif name == "hidePanel":
-        _safe_call(detach_roto_tools, node)
+        detach_viewer_tools(node)
     elif name == "gf_selection":
         _sync_roto_tools(node)

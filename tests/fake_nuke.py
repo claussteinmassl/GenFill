@@ -31,6 +31,7 @@ class Knob(object):
         self._value = value
         self._values = values or []
         self.expression = None
+        self.expressions = {}     # index -> expression (-1 = the whole knob)
         self.flags = 0
 
     def name(self):
@@ -61,7 +62,13 @@ class Knob(object):
     def setValues(self, values):
         self._values = list(values)
 
-    def setExpression(self, e):
+    def valueAt(self, time, index=-1):
+        v = self._value
+        if index >= 0 and isinstance(v, (list, tuple)):
+            return v[index]
+        return v
+
+    def setExpression(self, e, index=-1):
         # Like Nuke, complain if a parent.<knob> reference doesn't exist yet.
         import re
         for ref in re.findall(r"parent\.(\w+)", e):
@@ -69,6 +76,7 @@ class Knob(object):
             if group is None or ref not in group._knobs:
                 EXPRESSION_ERRORS.append("Nothing is named parent.%s (%s)" % (ref, self._name))
         self.expression = e
+        self.expressions[index] = e
 
     def setFlag(self, f):
         self.flags |= f
@@ -209,6 +217,14 @@ class Node(object):
 
     def setSelected(self, s):
         pass
+
+    # control panels (GUI only in Nuke; tracked here so tests can check them)
+    def showControlPanel(self, forceFloat=False):
+        self.panel_open = True
+        self.panel_float = forceFloat
+
+    def hideControlPanel(self):
+        self.panel_open = False
 
     def nodes(self):
         return list(self._children)

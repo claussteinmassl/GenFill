@@ -24,9 +24,11 @@ import threading
 import nuke
 
 from . import backends, colorspace, config, naming, pngio, region, state as gfstate
+from . import boxes as gfboxes
 from . import node as gfnode
 from . import log as gflog
 from .backends import BackendError, Cancelled, GenerationRequest
+from .backends import layout
 
 PROBE_LONG_SIDE = 192
 
@@ -216,6 +218,7 @@ def refresh_result(node):
     if _fwd(read["file"].value()) != _fwd(path):
         read["file"].setValue(_fwd(path))
     _configure_decode(node, gen)
+    _set_box_selection(node, gen.get("box_selection", False))
     x, y, w, h = gen["region"]
     ref = _internal(node, gfnode.REFORMAT_RECV)
     ref["box_width"].setValue(w)
@@ -385,21 +388,119 @@ def size_plan(node, backend=None):
     return backend.size_plan(w, h, node["gf_model"].value().strip(), resolution(node))
 
 
+def _set_box_selection(node, on):
+    """Use the filled boxes as the selection (box mask Switch) or the selection as is."""
+    bm = node.node(gfnode.BOX_MASK_SWITCH)
+    if bm is not None:
+        bm["which"].setValue(1 if on else 0)
+
+
+def _clamp_rect(rect, fw, fh):
+    """``rect`` (x, y, r, t, any order) inside the format as a :class:`region.Box`, or None
+    when nothing of it is inside."""
+    x, r = sorted((float(rect[0]), float(rect[2])))
+    y, t = sorted((float(rect[1]), float(rect[3])))
+    x, y, r, t = max(0.0, x), max(0.0, y), min(float(fw), r), min(float(fh), t)
+    if r <= x or t <= y:
+        return None
+    return region.Box(x, y, r, t)
+
+
+def _union(rects):
+    return region.Box(min(b.x for b in rects), min(b.y for b in rects),
+                      max(b.r for b in rects), max(b.t for b in rects))
+
+
+def _crop_box(n, rect, reg, mw, mh, prompt):
+    """A plate rectangle (x, y, r, t; origin bottom-left) as a :class:`layout.Box` in pixels
+    of the ``mw`` x ``mh`` image sent (origin top-left), clipped to it; None if outside."""
+    x, r = sorted((float(rect[0]), float(rect[2])))
+    y, t = sorted((float(rect[1]), float(rect[3])))
+    sx, sy = mw / float(reg.w), mh / float(reg.h)
+
+    def clip(v, hi):
+        return round(min(max(v, 0.0), float(hi)), 2)
+
+    x0, x1 = clip((x - reg.x) * sx, mw), clip((r - reg.x) * sx, mw)
+    y0, y1 = clip((reg.t - t) * sy, mh), clip((reg.t - y) * sy, mh)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return layout.Box(int(n), x0, y0, x1, y1, prompt)
+
+
+REF_PREFIX = "In <ref_image_0>, "
+
+
+def layout_request(style, prompt, info, reg, mw, mh):
+    """The prompt and boxes a generation sends for layout ``style``.
+
+    Enabled boxes with text become :class:`layout.Box` rows in crop pixels; boxes outside
+    the crop are dropped (a note says so). FLUX 3 styles without boxes get the selection as
+    an implicit box ``obj_1`` described by the prompt, so reference-edit FLUX 3 knows where
+    to edit; ``flux3`` (BFL syntax) also prefixes ``In <ref_image_0>, ``.
+
+    Args:
+        style: ``backend.layout_style(model)`` (``None`` = no boxes are sent).
+        prompt: The prompt as typed.
+        info: The layout part of :func:`_prepare`'s result (``boxes``, ``selection``).
+        reg: The crop region; ``mw`` x ``mh`` the size sent to the model.
+
+    Returns:
+        ``(prompt_to_send, [layout.Box], [note])``.
+    """
+    if not style:
+        return prompt, [], []
+    sent, notes = [], []
+    for b in info["boxes"]:
+        if not b.prompt.strip():
+            continue
+        box = _crop_box(b.n, b.rect, reg, mw, mh, b.prompt.strip())
+        if box is None:
+            gflog.warning("box obj_%d %s is outside the crop; not sent", b.n, b.rect)
+            notes.append("Box <obj_%d> is outside the image and was not sent." % b.n)
+        else:
+            sent.append(box)
+    flux3 = style.startswith("flux3")
+    text = (prompt or "").strip()
+    if flux3 and not sent and text:
+        box = _crop_box(1, info["selection"], reg, mw, mh, text)
+        if box is not None:
+            sent = [box]
+            prompt = text + " <obj_1>"
+            if style == "flux3":
+                prompt = REF_PREFIX + prompt
+    elif style == "flux3" and sent and text and "<ref_image_0>" not in prompt:
+        prompt = REF_PREFIX + prompt
+    return prompt, sent, notes
+
+
 def _prepare(node, backend, frame, job_dir):
-    """Render probe + crops. Returns (region, model_w, model_h, files dict)."""
+    """Render probe + crops.
+
+    Returns:
+        ``(region, model_w, model_h, (plate_w, plate_h), files, layout_info)``;
+        ``layout_info``: ``style`` (``backend.layout_style``), ``boxes`` (the enabled
+        :class:`boxes.BoxInfo`, only for a layout style), ``selection`` (the selection bounds,
+        plate pixels) and ``box_selection`` (the boxes were the selection).
+    """
     src_input = node.input(0)
     if src_input is None:
         raise UserError("Connect an image to the Source input.")
     gfnode.ensure_current(node)
+    model = node["gf_model"].value().strip()
+    style = backend.layout_style(model)
+    fmt = src_input.format()
+    fw, fh = fmt.width(), fmt.height()
+    active = [b for b in gfboxes.list_boxes(node, frame) if b.enabled] if style else []
+    inside = [r for r in (_clamp_rect(b.rect, fw, fh) for b in active) if r is not None]
     sel = int(node["gf_selection"].getValue())
     if sel == gfnode.SEL_MASK and node.input(1) is None:
         raise UserError("Connect a Roto (or any matte) to the Mask input, "
                         "or set 'selection from' to Shapes.")
-    if sel == gfnode.SEL_SHAPES and not gfnode.roto_has_shapes(node):
+    if sel == gfnode.SEL_SHAPES and not gfnode.roto_has_shapes(node) and not inside:
         raise UserError("Nothing is selected yet.\nClick 'Draw Selection' and draw a shape "
                         "in the Viewer around what you want to fill.")
-    fmt = src_input.format()
-    fw, fh = fmt.width(), fmt.height()
+    _set_box_selection(node, False)
 
     # 1. probe
     if fw >= fh:
@@ -413,15 +514,23 @@ def _prepare(node, backend, frame, job_dir):
     _execute(node, gfnode.PROBE_WRITE, probe_path, frame)
     bbox = region.mask_bbox(pngio.read(probe_path))
     gflog.info("selection probe %dx%d of %dx%d plate: bbox %s", pw, ph, fw, fh, bbox)
-    if bbox is None:
+    box_selection = bbox is None and bool(inside)
+    if bbox is None and not box_selection:
         raise UserError("The selection is empty on frame %d.\nCheck the shapes (are they "
                         "animated or switched off?), the Mask input or the Source alpha." % frame)
 
-    # 2. region
-    box = region.probe_bbox_to_format(bbox, pw, ph, fw, fh)
+    # 2. region (selection plus every enabled box, so the boxes are inside the crop)
+    if box_selection:
+        gflog.info("selection is empty: the %d enabled box(es) are the selection", len(inside))
+        _set_box_selection(node, True)
+        box = _union(inside)
+    else:
+        box = region.probe_bbox_to_format(bbox, pw, ph, fw, fh)
+    selection = box
+    if inside:
+        box = _union([box] + inside)
     context = node["gf_context"].value()
     min_size = int(node["gf_min_size"].value())
-    model = node["gf_model"].value().strip()
     res = resolution(node)
     rough = region.expand_region(box, fw, fh, context=context, min_size=min_size)
     plan = backend.size_plan(rough.w, rough.h, model, res)
@@ -451,7 +560,9 @@ def _prepare(node, backend, frame, job_dir):
     _execute(node, gfnode.WRITE_SRC, files["image"], frame)
     _execute(node, gfnode.WRITE_MASK, files["mask"], frame)
     _execute(node, gfnode.WRITE_MASK_A, files["mask_alpha"], frame)
-    return reg, mw, mh, (fw, fh), files
+    info = {"style": style, "boxes": active, "selection": tuple(selection),
+            "box_selection": box_selection}
+    return reg, mw, mh, (fw, fh), files, info
 
 
 # --------------------------------------------------------------------------
@@ -563,7 +674,7 @@ def generate(node, prompt=None, blocking=False):
         if proxy:
             root["proxy"].setValue(False)
         node["gf_frame"].setValue(frame)
-        reg, mw, mh, fmt, files = _prepare(node, backend, frame, job_dir)
+        reg, mw, mh, fmt, files, info = _prepare(node, backend, frame, job_dir)
     except UserError as exc:
         gflog.warning("Cannot generate: %s", exc)
         node["gf_frame"].setValue(prev_frame)
@@ -581,12 +692,13 @@ def generate(node, prompt=None, blocking=False):
             root["proxy"].setValue(True)
 
     seed = int(node["gf_seed"].value())
+    sent_prompt, sent_boxes, notes = layout_request(info["style"], prompt, info, reg, mw, mh)
     request = GenerationRequest(
         image_path=files["image"], mask_path=files["mask"],
-        mask_alpha_path=files["mask_alpha"], prompt=prompt, width=mw, height=mh,
+        mask_alpha_path=files["mask_alpha"], prompt=sent_prompt, width=mw, height=mh,
         seed=seed, count=count, negative_prompt=node["gf_negative"].value(),
         model=node["gf_model"].value().strip(), quality=node["gf_quality"].value(),
-        resolution=resolution(node))
+        resolution=resolution(node), boxes=sent_boxes)
     request.transfer = files["transfer"]
     meta = {
         "id": gen_id,
@@ -605,7 +717,18 @@ def generate(node, prompt=None, blocking=False):
         "abs_dir": job_dir,
         "transfer": files["transfer"],
         "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "selection": [round(v, 2) for v in info["selection"]],
     }
+    if info["box_selection"]:
+        meta["box_selection"] = True
+    if sent_boxes:
+        meta["layout"] = info["style"]
+        meta["boxes"] = [dict(b._asdict()) for b in sent_boxes]
+        gflog.info("%s layout: %d box(es) %s", info["style"], len(sent_boxes), meta["boxes"])
+    if sent_prompt != prompt:
+        meta["sent_prompt"] = sent_prompt
+    if notes:
+        meta["notes"] = " ".join(notes)
     gflog.info("starting %s: %d variation(s) at %dx%d, job %s", backend.id, count, mw, mh, job_dir)
     if blocking:
         _worker(node, uid, backend, request, api_key, meta, job_dir,
@@ -711,6 +834,7 @@ def _finish(node, uid, meta):
         meta = dict(meta)
         meta.pop("prev_frame", None)
         meta.pop("var_names", None)
+        note = meta.pop("notes", "")
         st = gfstate.add_generation(get_state(node), meta, select_first=True)
         _save_state(node, st)
         readback = get_state(node)
@@ -720,7 +844,7 @@ def _finish(node, uid, meta):
         refresh_result(node)
         gflog.info("Added generation %s with %d variation(s); selected the first",
                    meta["id"], len(meta.get("files", [])))
-        _set_status(uid, running=False, progress=1.0, message="", error="")
+        _set_status(uid, running=False, progress=1.0, message=note, error="")
     except Exception as exc:
         gflog.exception("Applying the generated result failed")
         _set_status(uid, running=False, progress=0.0, message="",
